@@ -32,8 +32,10 @@
 
 namespace cuopt::linear_programming::dual_simplex {
 
-auto constexpr use_gpu = true;
+bool constexpr use_gpu = false;
+bool constexpr use_augmented = true;
 auto constexpr TPB     = 256;
+
 
 template <typename i_t, typename f_t>
 class iteration_data_t {
@@ -60,6 +62,7 @@ class iteration_data_t {
       AD(lp.num_cols, lp.num_rows, 0),
       AT(lp.num_rows, lp.num_cols, 0),
       ADAT(lp.num_rows, lp.num_rows, 0),
+      augmented(lp.num_cols + lp.num_rows, lp.num_cols + lp.num_rows, 0),
       A_dense(lp.num_rows, 0),
       AD_dense(0, 0),
       H(0,0),
@@ -110,6 +113,10 @@ class iteration_data_t {
         diag[j] = 2.0;
       }
     }
+    if (use_augmented)
+    {
+      diag.multiply_scalar(-1.0);
+    }
     inv_diag.set_scalar(1.0);
     if (n_upper_bounds > 0) { diag.inverse(inv_diag); }
     inv_sqrt_diag.set_scalar(1.0);
@@ -117,7 +124,7 @@ class iteration_data_t {
 
     n_dense_columns = 0;
     std::vector<i_t> dense_columns_unordered;
-    if (settings.eliminate_dense_columns) {
+    if (!use_augmented && settings.eliminate_dense_columns) {
       f_t start_column_density = tic();
       find_dense_columns(lp.A, settings, dense_columns_unordered);
       for (i_t j : dense_columns_unordered) {
@@ -157,26 +164,93 @@ class iteration_data_t {
     original_A_values = AD.x;
     AD.transpose(AT);
 
-    if (use_gpu) {
-      device_AD.copy(AD, handle_ptr->get_stream());
-      device_A_x_values.resize(original_A_values.size(), handle_ptr->get_stream());
-      raft::copy(
-        device_A_x_values.data(), device_AD.x.data(), device_AD.x.size(), handle_ptr->get_stream());
-      csr_matrix_t<i_t, f_t> host_A_CSR(1, 1, 1); // Sizes will be set by to_compressed_row()
-      AD.to_compressed_row(host_A_CSR);
-      device_A.copy(host_A_CSR, lp.handle_ptr->get_stream());
-      RAFT_CHECK_CUDA(handle_ptr->get_stream());
+    if (!use_augmented) {
+      if (use_gpu) {
+        device_AD.copy(AD, handle_ptr->get_stream());
+        device_A_x_values.resize(original_A_values.size(), handle_ptr->get_stream());
+        raft::copy(device_A_x_values.data(),
+                   device_AD.x.data(),
+                   device_AD.x.size(),
+                   handle_ptr->get_stream());
+        csr_matrix_t<i_t, f_t> host_A_CSR(1, 1, 1);  // Sizes will be set by to_compressed_row()
+        AD.to_compressed_row(host_A_CSR);
+        device_A.copy(host_A_CSR, lp.handle_ptr->get_stream());
+        RAFT_CHECK_CUDA(handle_ptr->get_stream());
+      }
+      form_adat(true);
     }
-    form_adat(true);
 
-    chol = std::make_unique<sparse_cholesky_cudss_t<i_t, f_t>>(settings, lp.num_rows);
+    i_t factorization_size = use_augmented ? lp.num_rows + lp.num_cols : lp.num_rows;
+
+    chol = std::make_unique<sparse_cholesky_cudss_t<i_t, f_t>>(settings, factorization_size);
     chol->set_positive_definite(false);
 
     // Perform symbolic analysis
-    if (use_gpu) {
-      chol->analyze(device_ADAT);
+    if (use_augmented) {
+      // Build the sparsity pattern of the augmented system
+      form_augmented(true);
+      chol->analyze(augmented);
     } else {
-      chol->analyze(ADAT);
+      if (use_gpu) {
+        chol->analyze(device_ADAT);
+      } else {
+        chol->analyze(ADAT);
+      }
+    }
+  }
+
+  void form_augmented(bool first_call=false)
+  {
+    i_t n = A.n;
+    i_t m = A.m;
+    i_t nnzA = A.col_start[n];
+    i_t factorization_size = n + m;
+    if (first_call) {
+      augmented.reallocate(2 * nnzA + n);
+      i_t q = 0;
+      for (i_t j = 0; j < n; j++) {
+        augmented.col_start[j] = q;
+        augmented.i[q]         = j;
+        augmented.x[q++]       = -diag[j];
+        const i_t col_beg      = A.col_start[j];
+        const i_t col_end      = A.col_start[j + 1];
+        for (i_t p = col_beg; p < col_end; ++p) {
+          augmented.i[q]   = n + A.i[p];
+          augmented.x[q++] = A.x[p];
+        }
+      }
+      settings_.log.printf("augmented nz %d predicted %d\n", q, nnzA + n);
+      for (i_t k = n; k < n + m; ++k) {
+        augmented.col_start[k] = q;
+        const i_t l            = k - n;
+        const i_t col_beg      = AT.col_start[l];
+        const i_t col_end      = AT.col_start[l + 1];
+        for (i_t p = col_beg; p < col_end; ++p) {
+          augmented.i[q]   = AT.i[p];
+          augmented.x[q++] = AT.x[p];
+        }
+      }
+      augmented.col_start[n + m] = q;
+      settings_.log.printf("augmented nnz %d predicted %d\n", q, 2 * nnzA + n);
+
+#ifdef CHECK_SYMMETRY
+      csc_matrix_t<i_t, f_t> augmented_transpose(1, 1, 1);
+      augmented.transpose(augmented_transpose);
+      settings_.log.printf("Aug nnz %d Aug^T nnz %d\n",
+                           augmented.col_start[m + n],
+                           augmented_transpose.col_start[m + n]);
+      augmented.check_matrix();
+      augmented_transpose.check_matrix();
+      csc_matrix_t<i_t, f_t> error(m + n, m + n, 1);
+      add(augmented, augmented_transpose, 1.0, -1.0, error);
+      settings_.log.printf("|| Aug - Aug^T ||_1 %e\n", error.norm1());
+#endif
+    } else {
+      for (i_t j = 0; j < n; ++j)
+      {
+        const i_t q = augmented.col_start[j];
+        augmented.x[q] = -diag[j];
+      }
     }
   }
 
@@ -248,11 +322,17 @@ class iteration_data_t {
 
     float64_t adat_time = toc(start_form_adat);
     if (num_factorizations == 0) {
+      int64_t nnz;
+      if (use_gpu) {
+        nnz = device_ADAT.row_start.element(device_ADAT.m, device_ADAT.row_start.stream());
+      } else {
+        nnz = ADAT.col_start[m];
+      }
       settings_.log.printf("ADAT time %.2fs\n", adat_time);
-      settings_.log.printf("ADAT nonzeros %e density %.2f\n",
-                           static_cast<float64_t>(ADAT.col_start[m]),
-                           static_cast<float64_t>(ADAT.col_start[m]) /
-                             (static_cast<float64_t>(m) * static_cast<float64_t>(m)));
+      settings_.log.printf(
+        "ADAT nonzeros %e density %.2f\n",
+        static_cast<float64_t>(nnz),
+        static_cast<float64_t>(nnz) / (static_cast<float64_t>(m) * static_cast<float64_t>(m)));
     }
   }
 
@@ -1037,6 +1117,7 @@ class iteration_data_t {
   csc_matrix_t<i_t, f_t> AD;
   csc_matrix_t<i_t, f_t> AT;
   csc_matrix_t<i_t, f_t> ADAT;
+  csc_matrix_t<i_t, f_t> augmented;
   device_csr_matrix_t<i_t, f_t> device_ADAT;
   device_csr_matrix_t<i_t, f_t> device_A;
   device_csc_matrix_t<i_t, f_t> device_AD;
@@ -1091,10 +1172,15 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
 {
   // Perform a numerical factorization
   i_t status;
-  if (use_gpu) {
-    status = data.chol->factorize(data.device_ADAT);
+  if (use_augmented) {
+    settings.log.printf("Factorizing augmented\n");
+    status = data.chol->factorize(data.augmented);
   } else {
-    status = data.chol->factorize(data.ADAT);
+    if (use_gpu) {
+      status = data.chol->factorize(data.device_ADAT);
+    } else {
+      status = data.chol->factorize(data.ADAT);
+    }
   }
   if (status != 0) {
     settings.log.printf("Initial factorization failed\n");
@@ -1109,32 +1195,51 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
   dense_vector_t<i_t, f_t> Fu(lp.num_cols);
   data.gather_upper_bounds(lp.upper, Fu);
 
-  dense_vector_t<i_t, f_t> DinvFu(lp.num_cols);  // DinvFu = Dinv * Fu
-  data.inv_diag.pairwise_product(Fu, DinvFu);
-
-  // rhs_x <-  A * Dinv * F * u  - b
-  matrix_vector_multiply(lp.A, 1.0, DinvFu, -1.0, rhs_x);
-
-  // Solve A*Dinv*A'*q = A*Dinv*F*u - b
   dense_vector_t<i_t, f_t> q(lp.num_rows);
-  settings.log.printf("||rhs_x|| = %e\n", vector_norm2<i_t, f_t>(rhs_x));
-  // i_t solve_status = data.chol->solve(rhs_x, q);
-  i_t solve_status = data.solve_adat(rhs_x, q);
-  settings.log.printf("Initial solve status %d\n", solve_status);
-  settings.log.printf("||q|| = %e\n", vector_norm2<i_t, f_t>(q));
+  if (use_augmented) {
+    dense_vector_t<i_t, f_t> rhs(lp.num_cols + lp.num_rows);
+    for (i_t k = 0; k < lp.num_cols; k++) {
+      rhs[k] = -Fu[k];
+    }
+    for (i_t k = 0; k < lp.num_rows; k++) {
+      rhs[lp.num_cols + k] = rhs_x[k];
+    }
+    dense_vector_t<i_t, f_t> soln(lp.num_cols + lp.num_rows);
+    i_t solve_status = data.chol->solve(rhs, soln);
+    for (i_t k = 0; k < lp.num_cols; k++) {
+      data.x[k] = soln[k];
+    }
+    for (i_t k = 0; k < lp.num_rows; k++) {
+      q[k] = -soln[lp.num_cols + k];
+    }
+  } else {
+    dense_vector_t<i_t, f_t> DinvFu(lp.num_cols);  // DinvFu = Dinv * Fu
+    data.inv_diag.pairwise_product(Fu, DinvFu);
 
-  // rhs_x <- A*Dinv*A'*q - rhs_x
-  data.adat_multiply(1.0, q, -1.0, rhs_x);
-  // matrix_vector_multiply(data.ADAT, 1.0, q, -1.0, rhs_x);
-  settings.log.printf("|| A*Dinv*A'*q - (A*Dinv*F*u - b) || = %e\n", vector_norm2<i_t, f_t>(rhs_x));
+    // rhs_x <-  A * Dinv * F * u  - b
+    matrix_vector_multiply(lp.A, 1.0, DinvFu, -1.0, rhs_x);
 
-  // x = Dinv*(F*u - A'*q)
-  data.inv_diag.pairwise_product(Fu, data.x);
-  // Fu <- -1.0 * A' * q + 1.0 * Fu
-  matrix_transpose_vector_multiply(lp.A, -1.0, q, 1.0, Fu);
+    // Solve A*Dinv*A'*q = A*Dinv*F*u - b
+    settings.log.printf("||rhs_x|| = %e\n", vector_norm2<i_t, f_t>(rhs_x));
+    // i_t solve_status = data.chol->solve(rhs_x, q);
+    i_t solve_status = data.solve_adat(rhs_x, q);
+    settings.log.printf("Initial solve status %d\n", solve_status);
+    settings.log.printf("||q|| = %e\n", vector_norm2<i_t, f_t>(q));
 
-  // x <- Dinv * (F*u - A'*q)
-  data.inv_diag.pairwise_product(Fu, data.x);
+    // rhs_x <- A*Dinv*A'*q - rhs_x
+    data.adat_multiply(1.0, q, -1.0, rhs_x);
+    // matrix_vector_multiply(data.ADAT, 1.0, q, -1.0, rhs_x);
+    settings.log.printf("|| A*Dinv*A'*q - (A*Dinv*F*u - b) || = %e\n",
+                        vector_norm2<i_t, f_t>(rhs_x));
+
+    // x = Dinv*(F*u - A'*q)
+    data.inv_diag.pairwise_product(Fu, data.x);
+    // Fu <- -1.0 * A' * q + 1.0 * Fu
+    matrix_transpose_vector_multiply(lp.A, -1.0, q, 1.0, Fu);
+
+    // x <- Dinv * (F*u - A'*q)
+    data.inv_diag.pairwise_product(Fu, data.x);
+  }
 
   // w <- E'*u - E'*x
   if (data.n_upper_bounds > 0) {
@@ -1157,26 +1262,58 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
     settings.log.printf("|| u - w - x||: %e\n", vector_norm2<i_t, f_t>(data.bound_residual));
   }
 
-  // First compute rhs = A*Dinv*c
-  dense_vector_t<i_t, f_t> rhs(lp.num_rows);
-  dense_vector_t<i_t, f_t> Dinvc(lp.num_cols);
-  data.inv_diag.pairwise_product(lp.objective, Dinvc);
-  // rhs = 1.0 * A * Dinv * c
-  matrix_vector_multiply(lp.A, 1.0, Dinvc, 0.0, rhs);
+  dense_vector_t<i_t, f_t> dual_res(lp.num_cols);
+  if (use_augmented) {
+    dense_vector_t<i_t, f_t> dual_rhs(lp.num_cols + lp.num_rows);
+    dual_rhs.set_scalar(0.0);
+    for (i_t k = 0; k < lp.num_cols; k++) {
+      dual_rhs[k] = data.c[k];
+    }
+    dense_vector_t<i_t, f_t> py(lp.num_cols + lp.num_rows);
+    data.chol->solve(dual_rhs, py);
+    for (i_t k = 0; k < lp.num_cols; k++) {
+      data.z[k] = py[k];
+    }
+    for (i_t k = 0; k < lp.num_rows; k++) {
+      data.y[k] = py[lp.num_cols + k];
+    }
+    dense_vector_t<i_t, f_t> full_res = dual_rhs;
+    matrix_vector_multiply(data.augmented, 1.0, py, -1.0, full_res);
+    settings.log.printf("|| Aug (x y) - b || %e\n", vector_norm_inf<i_t, f_t>(full_res));
 
-  // Solve A*Dinv*A'*q = A*Dinv*c
-  // data.chol->solve(rhs, data.y);
-  data.solve_adat(rhs, data.y);
+    //data.z.pairwise_subtract(data.c, dual_res);
+    dual_res = data.c;
+    dual_res.axpy(1.0, data.z, -1.0);
+    matrix_transpose_vector_multiply(lp.A, 1.0, data.y, 1.0, dual_res);
+    settings.log.printf("|| A^T y + z - c|| %e\n", vector_norm2<i_t, f_t>(dual_res));
 
-  // z = Dinv*(c - A'*y)
-  dense_vector_t<i_t, f_t> cmATy = data.c;
-  matrix_transpose_vector_multiply(lp.A, -1.0, data.y, 1.0, cmATy);
-  // z <- Dinv * (c - A'*y)
-  data.inv_diag.pairwise_product(cmATy, data.z);
+    dense_vector_t<i_t, f_t> res1(lp.num_rows);
+    matrix_vector_multiply(lp.A, -1.0, data.z, 0.0, res1);
+    settings.log.printf("|| A p || %e\n", vector_norm2<i_t, f_t>(res1));
+
+  } else {
+    // First compute rhs = A*Dinv*c
+    dense_vector_t<i_t, f_t> rhs(lp.num_rows);
+    dense_vector_t<i_t, f_t> Dinvc(lp.num_cols);
+    data.inv_diag.pairwise_product(lp.objective, Dinvc);
+    // rhs = 1.0 * A * Dinv * c
+    matrix_vector_multiply(lp.A, 1.0, Dinvc, 0.0, rhs);
+
+    // Solve A*Dinv*A'*q = A*Dinv*c
+    // data.chol->solve(rhs, data.y);
+    data.solve_adat(rhs, data.y);
+
+    // z = Dinv*(c - A'*y)
+    dense_vector_t<i_t, f_t> cmATy = data.c;
+    matrix_transpose_vector_multiply(lp.A, -1.0, data.y, 1.0, cmATy);
+    // z <- Dinv * (c - A'*y)
+    data.inv_diag.pairwise_product(cmATy, data.z);
+  }
 
   // v = -E'*z
   data.gather_upper_bounds(data.z, data.v);
   data.v.multiply_scalar(-1.0);
+
 
   // Verify A'*y + z - E*v = c
   data.z.pairwise_subtract(data.c, data.dual_residual);
@@ -1187,6 +1324,7 @@ void barrier_solver_t<i_t, f_t>::initial_point(iteration_data_t<i_t, f_t>& data)
       data.dual_residual[j] -= data.v[k];
     }
   }
+  settings.log.printf("|| dual res || %e || dual residual || %e\n", vector_norm2<i_t, f_t>(dual_res), vector_norm2<i_t, f_t>(data.dual_residual));
   settings.log.printf("||A^T y + z - E*v - c ||: %e\n", vector_norm2<i_t, f_t>(data.dual_residual));
 
   // Make sure (w, x, v, z) > 0
@@ -1320,24 +1458,31 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   // inv_sqrt_diag <- sqrt(inv_diag)
   data.inv_diag.sqrt(data.inv_sqrt_diag);
 
-  // Form A*D*A'
+  // Form A*D*A' or the augmented system and factorize it
+
   if (!data.has_factorization) {
     i_t status;
-    // compute ADAT = A Dinv * A^T
-    data.form_adat();
-    // factorize
-    if (use_gpu) {
-      status = data.chol->factorize(data.device_ADAT);
+    if (use_augmented) {
+      data.form_augmented();
+      status = data.chol->factorize(data.augmented);
     } else {
-      status = data.chol->factorize(data.ADAT);
-    }
-    if (status < 0) {
-      settings.log.printf("Factorization failed.\n");
-      return -1;
+      // compute ADAT = A Dinv * A^T
+      data.form_adat();
+      // factorize
+      if (use_gpu) {
+        status = data.chol->factorize(data.device_ADAT);
+      } else {
+        status = data.chol->factorize(data.ADAT);
+      }
     }
     data.has_factorization = true;
     data.num_factorizations++;
     data.has_solve_info = false;
+
+    if (status < 0) {
+      settings.log.printf("Factorization failed.\n");
+      return -1;
+    }
   }
 
   // Compute h = primal_rhs + A*inv_diag*(dual_rhs - complementarity_xz_rhs ./ x +
@@ -1369,105 +1514,153 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   // ./ w)
   dense_vector_t<i_t, f_t> r1       = tmp3;
   dense_vector_t<i_t, f_t> r1_prime = r1;
-  // tmp4 <- inv_diag * ( dual_rhs -complementarity_xz_rhs ./ x + E *((complementarity_wv_rhs - v
-  // .* bound_rhs) ./ w))
-  data.inv_diag.pairwise_product(tmp3, tmp4);
-
-  dense_vector_t<i_t, f_t> h = data.primal_rhs;
-  // h <- 1.0 * A * tmp4 + primal_rhs
-  matrix_vector_multiply(lp.A, 1.0, tmp4, 1.0, h);
-
-  // Solve A D^{-1} A^T dy = h
-  // i_t solve_status = data.chol->solve(h, dy);
-  i_t solve_status = data.solve_adat(h, dy);
-  if (solve_status < 0) {
-    settings.log.printf("Linear solve failed\n");
-    return -1;
-  }
-
-  // y_residual <- ADAT*dy - h
-  dense_vector_t<i_t, f_t> y_residual = h;
-  // matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, y_residual);
-  data.adat_multiply(1.0, dy, -1.0, y_residual);
-  const f_t y_residual_norm = vector_norm_inf<i_t, f_t>(y_residual);
-  max_residual              = std::max(max_residual, y_residual_norm);
-  if (y_residual_norm > 1e-2) {
-    settings.log.printf("|| h || = %.2e\n", vector_norm_inf<i_t, f_t>(h));
-    settings.log.printf("||ADAT*dy - h|| = %.2e\n", y_residual_norm);
-  }
-  if (y_residual_norm > 10) { return -1; }
-
-  if (0 && y_residual_norm > 1e-10) {
-    settings.log.printf("Running PCG to improve residual 2-norm %e inf-norm %e\n",
-                        vector_norm2<i_t, f_t>(y_residual),
-                        y_residual_norm);
-    data.preconditioned_conjugate_gradient(
-      settings, h, std::min(y_residual_norm / 100.0, 1e-6), dy);
-    y_residual = h;
-    matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, y_residual);
-    const f_t y_residual_norm_pcg = vector_norm_inf<i_t, f_t>(y_residual);
-    settings.log.printf("PCG improved residual || ADAT * dy - h || = %.2e\n", y_residual_norm_pcg);
-  }
-
-  // dx = dinv .* (A'*dy - dual_rhs + complementarity_xz_rhs ./ x  - E *((complementarity_wv_rhs -
-  // v
-  // .* bound_rhs) ./ w))
-  // r1 <- A'*dy - r1
-  matrix_transpose_vector_multiply(lp.A, 1.0, dy, -1.0, r1);
-  // dx <- dinv .* r1
-  data.inv_diag.pairwise_product(r1, dx);
-
-  // dx_residual <- D * dx - A'*dy - r1
-  dense_vector_t<i_t, f_t> dx_residual(lp.num_cols);
-  // dx_residual <- D*dx
-  data.diag.pairwise_product(dx, dx_residual);
-  // dx_residual <- -A'*dy + D*dx
-  matrix_transpose_vector_multiply(lp.A, -1.0, dy, 1.0, dx_residual);
-  // dx_residual <- D*dx - A'*dy + r1
-  dx_residual.axpy(1.0, r1_prime, 1.0);
-  if (debug) {
-    const f_t dx_residual_norm = vector_norm_inf<i_t, f_t>(dx_residual);
-    max_residual               = std::max(max_residual, dx_residual_norm);
-    if (dx_residual_norm > 1e-2) {
-      settings.log.printf("|| D * dx - A'*y + r1 || = %.2e\n", dx_residual_norm);
+  if (use_augmented) {
+    dense_vector_t<i_t, f_t> augmented_rhs(lp.num_cols + lp.num_rows);
+    for (i_t k = 0; k < lp.num_cols; k++)
+    {
+      augmented_rhs[k] = r1[k];
     }
-  }
+    for (i_t k = 0; k < lp.num_rows; k++)
+    {
+      augmented_rhs[k + lp.num_cols] = data.primal_rhs[k];
+    }
+    dense_vector_t<i_t, f_t> augmented_soln(lp.num_cols + lp.num_rows);
+    data.chol->solve(augmented_rhs, augmented_soln);
+    for (i_t k = 0; k < lp.num_cols; k++)
+    {
+      dx[k] = augmented_soln[k];
+    }
+    for (i_t k = 0; k < lp.num_rows; k++)
+    {
+      dy[k] = augmented_soln[k + lp.num_cols];
+    }
+    dense_vector_t<i_t, f_t> augmented_residual = augmented_rhs;
+    matrix_vector_multiply(data.augmented, 1.0, augmented_soln, -1.0, augmented_residual);
+    f_t solve_err = vector_norm_inf<i_t, f_t>(augmented_residual);
+    if (solve_err > 1e-2)
+    {
+      settings.log.printf("|| Aug (dx, dy) - aug_rhs || %e\n", solve_err);
+    }
 
-  dense_vector_t<i_t, f_t> dx_residual_2(lp.num_cols);
-  // dx_residual_2 <- D^-1 * (A'*dy - r1)
-  data.inv_diag.pairwise_product(r1, dx_residual_2);
-  // dx_residual_2 <- D^-1 * (A'*dy - r1) - dx
-  dx_residual_2.axpy(-1.0, dx, 1.0);
-  // dx_residual_2 <- D^-1 * (A'*dy - r1) - dx
-  const f_t dx_residual_2_norm = vector_norm_inf<i_t, f_t>(dx_residual_2);
-  max_residual                 = std::max(max_residual, dx_residual_2_norm);
-  if (dx_residual_2_norm > 1e-2) {
-    settings.log.printf("|| D^-1 (A'*dy - r1) - dx || = %.2e\n", dx_residual_2_norm);
-  }
+    dense_vector_t<i_t, f_t> res = data.primal_rhs;
+    matrix_vector_multiply(lp.A, 1.0, dx, -1.0, res);
+    f_t prim_err = vector_norm_inf<i_t, f_t>(res);
+    if (prim_err > 1e-2)
+    {
+      settings.log.printf("|| A * dx - r_p || %e\n", prim_err);
+    }
 
-  dense_vector_t<i_t, f_t> dx_residual_5(lp.num_cols);
-  dense_vector_t<i_t, f_t> dx_residual_6(lp.num_rows);
-  // dx_residual_5 <- D^-1 * (A'*dy - r1)
-  data.inv_diag.pairwise_product(r1, dx_residual_5);
-  // dx_residual_6 <- A * D^-1 (A'*dy - r1)
-  matrix_vector_multiply(lp.A, 1.0, dx_residual_5, 0.0, dx_residual_6);
-  // dx_residual_6 <- A * D^-1 (A'*dy - r1) - A * dx
-  matrix_vector_multiply(lp.A, -1.0, dx, 1.0, dx_residual_6);
-  const f_t dx_residual_6_norm = vector_norm_inf<i_t, f_t>(dx_residual_6);
-  max_residual                 = std::max(max_residual, dx_residual_6_norm);
-  if (dx_residual_6_norm > 1e-2) {
-    settings.log.printf("|| A * D^-1 (A'*dy - r1) - A * dx || = %.2e\n", dx_residual_6_norm);
-  }
+    dense_vector_t<i_t, f_t> res1(lp.num_cols);
+    data.diag.pairwise_product(dx, res1);
+    res1.axpy(-1.0, r1, -1.0);
+    matrix_transpose_vector_multiply(lp.A, 1.0, dy, 1.0, res1);
+    f_t res1_err = vector_norm_inf<i_t, f_t>(res1);
+    if (res1_err > 1e-2)
+    {
+      settings.log.printf("|| A'*dy - r_1 - D dx || %e", vector_norm_inf<i_t, f_t>(res1));
+    }
+  } else {
+    // tmp4 <- inv_diag * ( dual_rhs -complementarity_xz_rhs ./ x + E *((complementarity_wv_rhs - v
+    // .* bound_rhs) ./ w))
+    data.inv_diag.pairwise_product(tmp3, tmp4);
 
-  dense_vector_t<i_t, f_t> dx_residual_3(lp.num_cols);
-  // dx_residual_3 <- D^-1 * r1
-  data.inv_diag.pairwise_product(r1_prime, dx_residual_3);
-  dense_vector_t<i_t, f_t> dx_residual_4(lp.num_rows);
-  // dx_residual_4 <- A * D^-1 * r1
-  matrix_vector_multiply(lp.A, 1.0, dx_residual_3, 0.0, dx_residual_4);
-  // dx_residual_4 <-  A * D^-1 * r1 + A * dx
-  matrix_vector_multiply(lp.A, 1.0, dx, 1.0, dx_residual_4);
-  // dx_residual_4 <- - A * D^-1 * r1 - A * dx + ADAT * dy
+    dense_vector_t<i_t, f_t> h = data.primal_rhs;
+    // h <- 1.0 * A * tmp4 + primal_rhs
+    matrix_vector_multiply(lp.A, 1.0, tmp4, 1.0, h);
+
+    // Solve A D^{-1} A^T dy = h
+    // i_t solve_status = data.chol->solve(h, dy);
+    i_t solve_status = data.solve_adat(h, dy);
+    if (solve_status < 0) {
+      settings.log.printf("Linear solve failed\n");
+      return -1;
+    }
+
+    // y_residual <- ADAT*dy - h
+    dense_vector_t<i_t, f_t> y_residual = h;
+    // matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, y_residual);
+    data.adat_multiply(1.0, dy, -1.0, y_residual);
+    const f_t y_residual_norm = vector_norm_inf<i_t, f_t>(y_residual);
+    max_residual              = std::max(max_residual, y_residual_norm);
+    if (y_residual_norm > 1e-2) {
+      settings.log.printf("|| h || = %.2e\n", vector_norm_inf<i_t, f_t>(h));
+      settings.log.printf("||ADAT*dy - h|| = %.2e\n", y_residual_norm);
+    }
+    if (y_residual_norm > 10) { return -1; }
+
+    if (0 && y_residual_norm > 1e-10) {
+      settings.log.printf("Running PCG to improve residual 2-norm %e inf-norm %e\n",
+                          vector_norm2<i_t, f_t>(y_residual),
+                          y_residual_norm);
+      data.preconditioned_conjugate_gradient(
+        settings, h, std::min(y_residual_norm / 100.0, 1e-6), dy);
+      y_residual = h;
+      matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, y_residual);
+      const f_t y_residual_norm_pcg = vector_norm_inf<i_t, f_t>(y_residual);
+      settings.log.printf("PCG improved residual || ADAT * dy - h || = %.2e\n",
+                          y_residual_norm_pcg);
+    }
+
+    // dx = dinv .* (A'*dy - dual_rhs + complementarity_xz_rhs ./ x  - E *((complementarity_wv_rhs -
+    // v
+    // .* bound_rhs) ./ w))
+    // r1 <- A'*dy - r1
+    matrix_transpose_vector_multiply(lp.A, 1.0, dy, -1.0, r1);
+    // dx <- dinv .* r1
+    data.inv_diag.pairwise_product(r1, dx);
+
+    // dx_residual <- D * dx - A'*dy - r1
+    dense_vector_t<i_t, f_t> dx_residual(lp.num_cols);
+    // dx_residual <- D*dx
+    data.diag.pairwise_product(dx, dx_residual);
+    // dx_residual <- -A'*dy + D*dx
+    matrix_transpose_vector_multiply(lp.A, -1.0, dy, 1.0, dx_residual);
+    // dx_residual <- D*dx - A'*dy + r1
+    dx_residual.axpy(1.0, r1_prime, 1.0);
+    if (debug) {
+      const f_t dx_residual_norm = vector_norm_inf<i_t, f_t>(dx_residual);
+      max_residual               = std::max(max_residual, dx_residual_norm);
+      if (dx_residual_norm > 1e-2) {
+        settings.log.printf("|| D * dx - A'*y + r1 || = %.2e\n", dx_residual_norm);
+      }
+    }
+
+    dense_vector_t<i_t, f_t> dx_residual_2(lp.num_cols);
+    // dx_residual_2 <- D^-1 * (A'*dy - r1)
+    data.inv_diag.pairwise_product(r1, dx_residual_2);
+    // dx_residual_2 <- D^-1 * (A'*dy - r1) - dx
+    dx_residual_2.axpy(-1.0, dx, 1.0);
+    // dx_residual_2 <- D^-1 * (A'*dy - r1) - dx
+    const f_t dx_residual_2_norm = vector_norm_inf<i_t, f_t>(dx_residual_2);
+    max_residual                 = std::max(max_residual, dx_residual_2_norm);
+    if (dx_residual_2_norm > 1e-2) {
+      settings.log.printf("|| D^-1 (A'*dy - r1) - dx || = %.2e\n", dx_residual_2_norm);
+    }
+
+    dense_vector_t<i_t, f_t> dx_residual_5(lp.num_cols);
+    dense_vector_t<i_t, f_t> dx_residual_6(lp.num_rows);
+    // dx_residual_5 <- D^-1 * (A'*dy - r1)
+    data.inv_diag.pairwise_product(r1, dx_residual_5);
+    // dx_residual_6 <- A * D^-1 (A'*dy - r1)
+    matrix_vector_multiply(lp.A, 1.0, dx_residual_5, 0.0, dx_residual_6);
+    // dx_residual_6 <- A * D^-1 (A'*dy - r1) - A * dx
+    matrix_vector_multiply(lp.A, -1.0, dx, 1.0, dx_residual_6);
+    const f_t dx_residual_6_norm = vector_norm_inf<i_t, f_t>(dx_residual_6);
+    max_residual                 = std::max(max_residual, dx_residual_6_norm);
+    if (dx_residual_6_norm > 1e-2) {
+      settings.log.printf("|| A * D^-1 (A'*dy - r1) - A * dx || = %.2e\n", dx_residual_6_norm);
+    }
+
+    dense_vector_t<i_t, f_t> dx_residual_3(lp.num_cols);
+    // dx_residual_3 <- D^-1 * r1
+    data.inv_diag.pairwise_product(r1_prime, dx_residual_3);
+    dense_vector_t<i_t, f_t> dx_residual_4(lp.num_rows);
+    // dx_residual_4 <- A * D^-1 * r1
+    matrix_vector_multiply(lp.A, 1.0, dx_residual_3, 0.0, dx_residual_4);
+    // dx_residual_4 <-  A * D^-1 * r1 + A * dx
+    matrix_vector_multiply(lp.A, 1.0, dx, 1.0, dx_residual_4);
+    // dx_residual_4 <- - A * D^-1 * r1 - A * dx + ADAT * dy
+  }
 
 #if CHECK_FORM_ADAT
   csc_matrix_t<i_t, f_t> ADinv = lp.A;
@@ -1492,6 +1685,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   }
 #endif
 
+#if CHECK_WITH_MULTIPLY
   dense_vector_t<i_t, f_t> dx_residual_7 = h;
   // matrix_vector_multiply(data.ADAT, 1.0, dy, -1.0, dx_residual_7);
   data.adat_multiply(1.0, dy, -1.0, dx_residual_7);
@@ -1500,6 +1694,7 @@ i_t barrier_solver_t<i_t, f_t>::compute_search_direction(iteration_data_t<i_t, f
   if (dx_residual_7_norm > 1e-2) {
     settings.log.printf("|| A D^{-1} A^T * dy - h || = %.2e\n", dx_residual_7_norm);
   }
+#endif
 
   // x_residual <- A * dx - primal_rhs
   dense_vector_t<i_t, f_t> x_residual = data.primal_rhs;
