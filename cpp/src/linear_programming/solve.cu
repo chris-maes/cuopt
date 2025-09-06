@@ -355,9 +355,10 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
                                           dual_simplex::lp_solution_t<i_t, f_t>& solution)
 {
   dual_simplex::lp_status_t status = dual_simplex::lp_status_t::UNSET;
-  int parent_to_child_pipe[2];
-  int child_to_parent_pipe[2];
-  if (pipe(parent_to_child_pipe) == -1 || pipe(child_to_parent_pipe) == -1) {
+  int parent_to_child_data_pipe[2];
+  int child_to_parent_data_pipe[2];
+  int child_to_parent_output_pipe[2];
+  if (pipe(parent_to_child_data_pipe) == -1 || pipe(child_to_parent_data_pipe) == -1 || pipe(child_to_parent_output_pipe) == -1) {
       perror("pipe failed");
       return status;
   }
@@ -374,17 +375,21 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
   if (child_pid == 0) {
     // --- CHILD PROCESS (before execve) ---
     // Close unused ends of pipes
-    close(parent_to_child_pipe[1]);
-    close(child_to_parent_pipe[0]);
+    close(parent_to_child_data_pipe[1]);
+    close(child_to_parent_data_pipe[0]);
+    close(child_to_parent_output_pipe[0]);
 
     // Redirect stdin to the read end of the parent->child pipe
-    dup2(parent_to_child_pipe[0], STDIN_FILENO);
+    dup2(parent_to_child_data_pipe[0], STDIN_FILENO);
     // Redirect stdout to the write end of the child->parent pipe
-    dup2(child_to_parent_pipe[1], STDOUT_FILENO);
+    dup2(child_to_parent_output_pipe[1], STDOUT_FILENO);
+    // Map an extra file descriptor to the child->parent data pipe
+    dup2(child_to_parent_data_pipe[1], 3);
 
     // Close the original file descriptors, as dup2 has copied them
-    close(parent_to_child_pipe[0]);
-    close(child_to_parent_pipe[1]);
+    close(parent_to_child_data_pipe[0]);
+    close(child_to_parent_data_pipe[1]);
+    close(child_to_parent_output_pipe[1]);
 
     // Prepare arguments for the execve call
     char user_problem_size_str[128];
@@ -407,9 +412,9 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
     // Prepare and send data to child
     char *user_problem_buffer = new char[user_problem_size];
     user_problem.serialize(user_problem_buffer);
-    write_all(parent_to_child_pipe[1], user_problem_buffer, user_problem_size);
+    write_all(parent_to_child_data_pipe[1], user_problem_buffer, user_problem_size);
     delete[] user_problem_buffer;
-    close(parent_to_child_pipe[1]); // Signal EOF to child
+    close(parent_to_child_data_pipe[1]); // Signal EOF to child
     
     fd_set read_fds;
     struct timeval timeout;
@@ -419,7 +424,7 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
 
     while (1) {
       FD_ZERO(&read_fds);
-      FD_SET(child_to_parent_pipe[0], &read_fds);
+      FD_SET(child_to_parent_data_pipe[0], &read_fds);
         
         // Set a short timeout for the select() call (100ms)
         timeout.tv_sec = 0;
@@ -427,7 +432,7 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
 
 
         std::cout << "Parent: Polling child " << std::endl;
-        int select_result = select(child_to_parent_pipe[0] + 1, &read_fds, NULL, NULL, &timeout);
+        int select_result = select(child_to_parent_data_pipe[0] + 1, &read_fds, NULL, NULL, &timeout);
 
         // Check if another solver has finished
         if (settings.concurrent_halt != nullptr && settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
@@ -450,7 +455,7 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
 
     if (child_finished) {
         char *received_buffer = new char[transfer_size];
-        if (read_all(child_to_parent_pipe[0], received_buffer, transfer_size) == transfer_size) {
+        if (read_all(child_to_parent_data_pipe[0], received_buffer, transfer_size) == transfer_size) {
             i_t status_int = solution.deserialize(received_buffer);
             status = static_cast<dual_simplex::lp_status_t>(status_int);
         } else {
@@ -459,7 +464,8 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
         delete[] received_buffer;
     }
 
-    close(child_to_parent_pipe[0]); // Close read end
+    close(child_to_parent_data_pipe[0]); // Close read end
+    close(child_to_parent_output_pipe[0]); // Close read end
 
     int status;
     waitpid(child_pid, &status, 0); // Wait for child to exit and reap it
