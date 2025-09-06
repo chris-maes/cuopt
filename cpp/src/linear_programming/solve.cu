@@ -373,6 +373,9 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
       // Child process
       close(pipe_fd[0]); // Close read end
       std::cout << "Child: Solving linear program with barrier" << std::endl;
+      // The raft handle needs to reset in the child process
+      user_problem.handle_ptr = raft::handle_t{};
+
       status = dual_simplex::solve_linear_program_with_barrier<i_t, f_t>(
         user_problem, settings, solution);
       std::cout << "Child: solve_linear_program_with_barrier finished" << std::endl;
