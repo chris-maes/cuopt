@@ -377,7 +377,7 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
         user_problem, settings, solution);
 
       char *result_buffer = new char[transfer_size];
-      solution.serialize(result_buffer, status);
+      solution.serialize(result_buffer, static_cast<i_t>(status));
       write_all(pipe_fd[1], result_buffer, transfer_size);
       delete[] result_buffer;
       
