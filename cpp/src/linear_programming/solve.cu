@@ -359,7 +359,7 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
   int child_to_parent_pipe[2];
   if (pipe(parent_to_child_pipe) == -1 || pipe(child_to_parent_pipe) == -1) {
       perror("pipe failed");
-      return 1;
+      return status;
   }
 
   pid_t child_pid = fork();
@@ -418,8 +418,8 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
     bool child_finished = false;
 
     while (1) {
-        FD_ZERO(&read_fds);
-        FD_SET(pipe_fd[0], &read_fds);
+      FD_ZERO(&read_fds);
+      FD_SET(child_to_parent_pipe[0], &read_fds);
         
         // Set a short timeout for the select() call (100ms)
         timeout.tv_sec = 0;
@@ -427,7 +427,7 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
 
 
         std::cout << "Parent: Polling child " << std::endl;
-        int select_result = select(pipe_fd[0] + 1, &read_fds, NULL, NULL, &timeout);
+        int select_result = select(child_to_parent_pipe[0] + 1, &read_fds, NULL, NULL, &timeout);
 
         // Check if another solver has finished
         if (settings.concurrent_halt != nullptr && settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
@@ -450,7 +450,7 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
 
     if (child_finished) {
         char *received_buffer = new char[transfer_size];
-        if (read_all(pipe_fd[0], received_buffer, transfer_size) == transfer_size) {
+        if (read_all(child_to_parent_pipe[0], received_buffer, transfer_size) == transfer_size) {
             i_t status_int = solution.deserialize(received_buffer);
             status = static_cast<dual_simplex::lp_status_t>(status_int);
         } else {
@@ -459,7 +459,7 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
         delete[] received_buffer;
     }
 
-    close(pipe_fd[0]); // Close read end
+    close(child_to_parent_pipe[0]); // Close read end
 
     int status;
     waitpid(child_pid, &status, 0); // Wait for child to exit and reap it

@@ -4,9 +4,12 @@
 #include <dual_simplex/solve.hpp>
 #include <dual_simplex/simplex_solver_settings.hpp>
 
+#include <raft/core/handle.hpp>
+
 #include <string>
 #include <unistd.h>
 #include <numeric>
+#include <errno.h>
 
 
 
@@ -52,13 +55,15 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    namespace dual_simplex = cuopt::linear_programming::dual_simplex;
+
     raft::handle_t handle;
-    dual_simplex::user_problem_t<int, double> user_problem(handle);
+    dual_simplex::user_problem_t<int, double> user_problem(&handle);
     user_problem.deserialize(buffer);
 
     dual_simplex::lp_solution_t<int, double> solution(user_problem.num_rows, user_problem.num_cols);
     dual_simplex::simplex_solver_settings_t<int, double> simplex_settings;
-    dual_simplex::lp_status_t status = dual_simplex::solve_linear_program_with_barrier(user_problem, simplex_settings, solution);
+    dual_simplex::lp_status_t status = dual_simplex::solve_linear_program_with_barrier<int, double>(user_problem, simplex_settings, solution);
 
     char *result_buffer = new char[solution.bytes_required()];
     solution.serialize(result_buffer, static_cast<int>(status));

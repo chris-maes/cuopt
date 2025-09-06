@@ -40,7 +40,7 @@ struct user_problem_t {
   {
   }
 
-  size_t bytes_requried() const {
+  size_t bytes_required() const {
     // Minimial bytes required to serialize an LP only
     size_t bytes_required = 0;
     i_t nnz = A.col_start[num_cols];
