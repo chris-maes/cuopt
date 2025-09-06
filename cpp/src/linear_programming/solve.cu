@@ -355,10 +355,11 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
                                           dual_simplex::lp_solution_t<i_t, f_t>& solution)
 {
   dual_simplex::lp_status_t status = dual_simplex::lp_status_t::UNSET;
-  int pipe_fd[2];
-  if (pipe(pipe_fd) == -1) {
+  int parent_to_child_pipe[2];
+  int child_to_parent_pipe[2];
+  if (pipe(parent_to_child_pipe) == -1 || pipe(child_to_parent_pipe) == -1) {
       perror("pipe failed");
-      return status;
+      return 1;
   }
 
   pid_t child_pid = fork();
@@ -368,31 +369,47 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
   }
 
   ssize_t transfer_size = static_cast<ssize_t>(solution.bytes_required());
+  ssize_t user_problem_size = static_cast<ssize_t>(user_problem.bytes_required());
   
   if (child_pid == 0) {
-      // Child process
-      close(pipe_fd[0]); // Close read end
-      std::cout << "Child: Solving linear program with barrier" << std::endl;
-      // The raft handle needs to reset in the child process
-      raft::handle_t handle{};
-      user_problem.handle_ptr = &handle;
-      init_handler(user_problem.handle_ptr);
+    // --- CHILD PROCESS (before execve) ---
+    // Close unused ends of pipes
+    close(parent_to_child_pipe[1]);
+    close(child_to_parent_pipe[0]);
 
-      status = dual_simplex::solve_linear_program_with_barrier<i_t, f_t>(
-        user_problem, settings, solution);
-      std::cout << "Child: solve_linear_program_with_barrier finished" << std::endl;
+    // Redirect stdin to the read end of the parent->child pipe
+    dup2(parent_to_child_pipe[0], STDIN_FILENO);
+    // Redirect stdout to the write end of the child->parent pipe
+    dup2(child_to_parent_pipe[1], STDOUT_FILENO);
 
-      char *result_buffer = new char[transfer_size];
-      solution.serialize(result_buffer, static_cast<i_t>(status));
-      write_all(pipe_fd[1], result_buffer, transfer_size);
-      delete[] result_buffer;
-      
-      close(pipe_fd[1]); // Close write end
-      exit(0);
+    // Close the original file descriptors, as dup2 has copied them
+    close(parent_to_child_pipe[0]);
+    close(child_to_parent_pipe[1]);
+
+    // Prepare arguments for the execve call
+    char user_problem_size_str[128];
+    snprintf(user_problem_size_str, sizeof(user_problem_size_str), "%zu", user_problem_size);
+    char* child_args[] = { (char*)"cpp/build/barrier", user_problem_size_str, NULL };
+
+    // Execute the child program  
+    execve(child_args[0], child_args, NULL);
+
+    // If execve fails, this code will be reached
+    perror("execve failed");
+    exit(1);
   }
   else {
-    // Parent process
-    close(pipe_fd[1]); // Close write end
+    // --- PARENT PROCESS ---
+    // Close unused ends of pipes
+    close(parent_to_child_pipe[0]);
+    close(child_to_parent_pipe[1]);
+
+    // Prepare and send data to child
+    char *user_problem_buffer = new char[user_problem_size];
+    user_problem.serialize(user_problem_buffer);
+    write_all(parent_to_child_pipe[1], user_problem_buffer, user_problem_size);
+    delete[] user_problem_buffer;
+    close(parent_to_child_pipe[1]); // Signal EOF to child
     
     fd_set read_fds;
     struct timeval timeout;

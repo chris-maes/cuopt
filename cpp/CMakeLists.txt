@@ -274,6 +274,39 @@ target_link_libraries(cuopt
   )
 
 
+add_executable(barrier ${CMAKE_CURRENT_SOURCE_DIR}/src/dual_simplex/barrier_exe.cpp)
+
+target_include_directories(barrier SYSTEM PRIVATE "${papilo_SOURCE_DIR}/src" "${papilo_BINARY_DIR}")
+
+target_include_directories(barrier
+  PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src"
+  "${CUDSS_INCLUDE}"
+  PUBLIC
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>"
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libmps_parser/include>"
+  INTERFACE
+  "$<INSTALL_INTERFACE:include>"
+  ${CUDSS_INCLUDE}
+)
+
+  target_link_libraries(barrier
+  PUBLIC
+  CUDA::cublas
+  CUDA::cusparse
+  rmm::rmm
+  rapids_logger::rapids_logger
+  CCCL::CCCL
+  raft::raft
+  cuopt::mps_parser
+  ${CUDSS_LIBRARIES}
+  PRIVATE
+  ${CUOPT_PRIVATE_CUDA_LIBS}
+  )
+
+
 # ##################################################################################################
 # - generate tests --------------------------------------------------------------------------------
 if(BUILD_TESTS)
