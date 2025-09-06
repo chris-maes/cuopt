@@ -47,6 +47,16 @@
 #include <raft/common/nvtx.hpp>
 #include <raft/core/handle.hpp>
 
+
+#include <vector>
+#include <string>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/time.h>
+#include <sys/select.h>
+#include <signal.h>
+#include <numeric>
+#include <ctime>
 #include <thread>  // For std::thread
 
 namespace cuopt::linear_programming {
@@ -295,6 +305,150 @@ optimization_problem_solution_t<i_t, f_t> convert_dual_simplex_sol(
   return sol;
 }
 
+// Function to safely write all data to a pipe
+ssize_t write_all(int fd, const void* buf, size_t count) {
+  size_t bytes_written = 0;
+  while (bytes_written < count) {
+      ssize_t result = write(fd, static_cast<const char*>(buf) + bytes_written, count - bytes_written);
+      if (result == -1) {
+          if (errno == EINTR) continue; // Interrupted by a signal, try again
+          return -1; // An error occurred
+      }
+      bytes_written += result;
+  }
+  return bytes_written;
+}
+
+// Function to safely read all data from a pipe
+ssize_t read_all(int fd, void* buf, size_t count) {
+  size_t bytes_read = 0;
+  while (bytes_read < count) {
+      ssize_t result = read(fd, static_cast<char*>(buf) + bytes_read, count - bytes_read);
+      if (result == -1) {
+          if (errno == EINTR) continue;
+          return -1;
+      }
+      if (result == 0) return bytes_read; // End of file
+      bytes_read += result;
+  }
+  return bytes_read;
+}
+
+// Function to check if the child has exited
+bool is_child_finished(pid_t child_pid) {
+  int status;
+  // WNOHANG makes waitpid non-blocking
+  pid_t result = waitpid(child_pid, &status, WNOHANG);
+  if (result == 0) {
+      return false; // Child is still running
+  } else if (result == -1) {
+      perror("waitpid");
+      return true; // An error occurred, so assume it's done
+  } else {
+      return true; // waitpid returned the child's PID, meaning it exited
+  }
+}
+
+template <typename i_t, typename f_t>
+dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
+                                          dual_simplex::simplex_solver_settings_t<i_t, f_t>& settings,
+                                          dual_simplex::lp_solution_t<i_t, f_t>& solution)
+{
+  dual_simplex::lp_status_t status = dual_simplex::lp_status_t::UNSET;
+  int pipe_fd[2];
+  if (pipe(pipe_fd) == -1) {
+      perror("pipe failed");
+      return 1;
+  }
+
+  pid_t child_pid = fork();
+  if (child_pid == -1) {
+      perror("fork failed");
+      return 1;
+  }
+
+  ssize_t transfer_size = static_cast<ssize_t>(solution.bytes_required());
+  
+  if (child_pid == 0) {
+      // Child process
+      close(pipe_fd[0]); // Close read end
+      
+      status = dual_simplex::solve_linear_program_with_barrier<i_t, f_t>(
+        user_problem, dual_simplex_settings, solution);
+
+      char *result_buffer = new char[transfer_size];
+      solution.serialize(result_buffer, status);
+      write_all(pipe_fd[1], result_buffer, transfer_size);
+      delete[] result_buffer;
+      
+      close(pipe_fd[1]); // Close write end
+      exit(0);
+  }
+  else {
+    // Parent process
+    close(pipe_fd[1]); // Close write end
+    
+    fd_set read_fds;
+    struct timeval timeout;
+    time_t start_time = time(0);
+
+    bool child_finished = false;
+
+    while (1) {
+        FD_ZERO(&read_fds);
+        FD_SET(pipe_fd[0], &read_fds);
+        
+        // Set a short timeout for the select() call (100ms)
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 100000; // 100 milliseconds = 100,000 microseconds
+
+
+        std::cout << "Parent: Polling child " << std::endl;
+        int select_result = select(pipe_fd[0] + 1, &read_fds, NULL, NULL, &timeout);
+
+        // Check if another solver has finished
+        if (settings.concurrent_halt != nullptr && settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
+          std::cout << "Parent: Another solver has finished. Terminating child." << std::endl;
+          kill(child_pid, SIGTERM);
+          break;
+        }
+
+        if (select_result > 0) {
+            // Pipe has data, so child must have finished
+            std::cout << "Parent: Child finished and sent data." << std::endl;
+            child_finished = true;
+            break;
+        } else if (is_child_finished(child_pid)) {
+            // Check if the child exited without writing to the pipe
+            std::cout << "Parent: Child process exited unexpectedly." << std::endl;
+            break;
+        }
+    }
+
+    if (child_finished) {
+        char *received_buffer = new char[transfer_size];
+        if (read_all(pipe_fd[0], received_buffer, transfer_size) == transfer_size) {
+            i_t status_int = solution.deserialize(received_buffer);
+            status = static_cast<dual_simplex::lp_status_t>(status_int);
+        } else {
+            std::cerr << "Parent: Failed to read complete vector data." << std::endl;
+        }
+        delete[] received_buffer;
+    }
+
+    close(pipe_fd[0]); // Close read end
+
+    int status;
+    waitpid(child_pid, &status, 0); // Wait for child to exit and reap it
+    if (WIFEXITED(status)) {
+        std::cout << "Parent: Child process finished with status " << WEXITSTATUS(status) << std::endl;
+    } else if (WIFSIGNALED(status)) {
+        std::cout << "Parent: Child process was terminated by signal " << WTERMSIG(status) << std::endl;
+    }
+  }
+  return status;
+}
+
 template <typename i_t, typename f_t>
 std::tuple<dual_simplex::lp_solution_t<i_t, f_t>, dual_simplex::lp_status_t, f_t, f_t, f_t>
 run_barrier(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
@@ -317,10 +471,16 @@ run_barrier(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
     // Don't show the dual simplex log in concurrent mode. Show the PDLP log instead
     dual_simplex_settings.log.log = false;
   }
-
+  const bool barrier_process = true;
   dual_simplex::lp_solution_t<i_t, f_t> solution(user_problem.num_rows, user_problem.num_cols);
-  auto status = dual_simplex::solve_linear_program_with_barrier<i_t, f_t>(
+  dual_simplex::lp_status_t status = dual_simplex::lp_status_t::UNSET;
+  if (barrier_process) {
+    status = barrier_process<i_t, f_t>(user_problem, dual_simplex_settings, solution);
+  }
+  else {
+  status = dual_simplex::solve_linear_program_with_barrier<i_t, f_t>(
     user_problem, dual_simplex_settings, solution);
+  }
 
   auto end      = std::chrono::high_resolution_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start_solver);

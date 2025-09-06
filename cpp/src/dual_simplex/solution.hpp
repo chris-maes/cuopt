@@ -45,6 +45,61 @@ class lp_solution_t {
     z.resize(n);
   }
 
+  size_t bytes_required() const 
+  {
+    return x.size() * sizeof(f_t) + y.size() * sizeof(f_t) + z.size() * sizeof(f_t) + 4 * sizeof(f_t) + 2 *sizeof(i_t);
+  }
+
+  void serialize(char *buffer, i_t status) const
+  {
+    size_t bytes_required = this->bytes_required();
+    size_t bytes_written = 0;
+    memcpy(buffer, x.data(), x.size() * sizeof(f_t));
+    bytes_written += x.size() * sizeof(f_t);
+    memcpy(buffer + bytes_written, y.data(), y.size() * sizeof(f_t));
+    bytes_written += y.size() * sizeof(f_t);
+    memcpy(buffer + bytes_written, z.data(), z.size() * sizeof(f_t));
+    bytes_written += z.size() * sizeof(f_t);
+    memcpy(buffer + bytes_written, &objective, sizeof(f_t));
+    bytes_written += sizeof(f_t);
+    memcpy(buffer + bytes_written, &user_objective, sizeof(f_t));
+    bytes_written += sizeof(f_t);
+    memcpy(buffer + bytes_written, &iterations, sizeof(i_t));
+    bytes_written += sizeof(i_t);
+    memcpy(buffer + bytes_written, &l2_primal_residual, sizeof(f_t));
+    bytes_written += sizeof(f_t);
+    memcpy(buffer + bytes_written, &l2_dual_residual, sizeof(f_t));
+    bytes_written += sizeof(f_t);
+    memcpy(buffer + bytes_written, &status, sizeof(i_t));
+    bytes_written += sizeof(i_t);
+  }
+
+  i_t deserialize(char *buffer)
+  {
+    size_t bytes_required = this->bytes_required();
+    size_t bytes_read = 0;
+    memcpy(x.data(), buffer, x.size() * sizeof(f_t));
+    bytes_read += x.size() * sizeof(f_t);
+    memcpy(y.data(), buffer + bytes_read, y.size() * sizeof(f_t));
+    bytes_read += y.size() * sizeof(f_t);
+    memcpy(z.data(), buffer + bytes_read, z.size() * sizeof(f_t));
+    bytes_read += z.size() * sizeof(f_t);
+    memcpy(&objective, buffer + bytes_read, sizeof(f_t));
+    bytes_read += sizeof(f_t);
+    memcpy(&user_objective, buffer + bytes_read, sizeof(f_t));
+    bytes_read += sizeof(f_t);
+    memcpy(&iterations, buffer + bytes_read, sizeof(i_t));
+    bytes_read += sizeof(i_t);
+    memcpy(&l2_primal_residual, buffer + bytes_read, sizeof(f_t));
+    bytes_read += sizeof(f_t);
+    memcpy(&l2_dual_residual, buffer + bytes_read, sizeof(f_t));
+    bytes_read += sizeof(f_t);
+    i_t status;
+    memcpy(&status, buffer + bytes_read, sizeof(i_t));
+    bytes_read += sizeof(i_t);
+    return status;
+  }
+
   // Primal solution vector
   std::vector<f_t> x;
   // Dual solution vector. Lagrange multipliers for equality constraints.
