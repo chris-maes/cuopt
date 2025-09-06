@@ -358,13 +358,13 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
   int pipe_fd[2];
   if (pipe(pipe_fd) == -1) {
       perror("pipe failed");
-      return 1;
+      return status;
   }
 
   pid_t child_pid = fork();
   if (child_pid == -1) {
       perror("fork failed");
-      return 1;
+      return status;
   }
 
   ssize_t transfer_size = static_cast<ssize_t>(solution.bytes_required());
