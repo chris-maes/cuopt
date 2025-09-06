@@ -471,10 +471,10 @@ run_barrier(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
     // Don't show the dual simplex log in concurrent mode. Show the PDLP log instead
     dual_simplex_settings.log.log = false;
   }
-  const bool barrier_process = true;
+  const bool use_barrier_process = true;
   dual_simplex::lp_solution_t<i_t, f_t> solution(user_problem.num_rows, user_problem.num_cols);
   dual_simplex::lp_status_t status = dual_simplex::lp_status_t::UNSET;
-  if (barrier_process) {
+  if (use_barrier_process) {
     status = barrier_process(user_problem, dual_simplex_settings, solution);
   }
   else {
