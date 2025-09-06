@@ -374,7 +374,7 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
       close(pipe_fd[0]); // Close read end
       
       status = dual_simplex::solve_linear_program_with_barrier<i_t, f_t>(
-        user_problem, dual_simplex_settings, solution);
+        user_problem, settings, solution);
 
       char *result_buffer = new char[transfer_size];
       solution.serialize(result_buffer, status);
@@ -475,7 +475,7 @@ run_barrier(dual_simplex::user_problem_t<i_t, f_t>& user_problem,
   dual_simplex::lp_solution_t<i_t, f_t> solution(user_problem.num_rows, user_problem.num_cols);
   dual_simplex::lp_status_t status = dual_simplex::lp_status_t::UNSET;
   if (barrier_process) {
-    status = barrier_process<i_t, f_t>(user_problem, dual_simplex_settings, solution);
+    status = barrier_process(user_problem, dual_simplex_settings, solution);
   }
   else {
   status = dual_simplex::solve_linear_program_with_barrier<i_t, f_t>(
