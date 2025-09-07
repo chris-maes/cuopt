@@ -305,6 +305,14 @@ optimization_problem_solution_t<i_t, f_t> convert_dual_simplex_sol(
   return sol;
 }
 
+int find_available_fd(int start_fd = 3) {
+  for (int fd = start_fd; fd < 100; fd++) {  // reasonable upper limit
+      if (fcntl(fd, F_GETFD) == -1 && errno == EBADF) {
+          return fd;  // FD is not in use
+      }
+  }
+  return -1;  // No available FD found
+}
 // Function to safely write all data to a pipe
 ssize_t write_all(int fd, const void* buf, size_t count) {
   size_t bytes_written = 0;
@@ -355,14 +363,27 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
                                           dual_simplex::lp_solution_t<i_t, f_t>& solution)
 {
   dual_simplex::lp_status_t status = dual_simplex::lp_status_t::UNSET;
-  int parent_to_child_data_pipe[2];
-  int child_to_parent_data_pipe[2];
-  int child_to_parent_output_pipe[2];
-  if (pipe(parent_to_child_data_pipe) == -1 || pipe(child_to_parent_data_pipe) == -1 || pipe(child_to_parent_output_pipe) == -1) {
-      perror("pipe failed");
-      return status;
+
+  constexpr int READ = 0;
+  constexpr int WRITE = 1;
+
+  int to_child[2];     // Parent → Child
+  int from_child[2];   // Child → Parent
+
+  if (pipe(to_child) == -1 || pipe(from_child) == -1) {
+    perror("pipe failed");
+    return status;
   }
 
+  // Find available file descriptors for the child
+  int fd_in = find_available_fd();
+  int fd_out = find_available_fd(fd_in + 1);
+    
+  if (fd_in == -1 || fd_out == -1) {
+    std::cout << "Error: Could not find available file descriptors" << std::endl;
+    return status;
+  }
+  
   pid_t child_pid = fork();
   if (child_pid == -1) {
       perror("fork failed");
@@ -373,48 +394,42 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
   ssize_t user_problem_size = static_cast<ssize_t>(user_problem.bytes_required());
   
   if (child_pid == 0) {
-    // --- CHILD PROCESS (before execve) ---
-    // Close unused ends of pipes
-    close(parent_to_child_data_pipe[1]);
-    close(child_to_parent_data_pipe[0]);
-    close(child_to_parent_output_pipe[0]);
+     // === Child ===
+     close(to_child[WRITE]);    // unused in child
+     close(from_child[READ]);  // unused in child
 
-    // Redirect stdin to the read end of the parent->child pipe
-    dup2(parent_to_child_data_pipe[0], STDIN_FILENO);
-    // Redirect stdout to the write end of the child->parent pipe
-    dup2(child_to_parent_output_pipe[1], STDOUT_FILENO);
-    // Map an extra file descriptor to the child->parent data pipe
-    dup2(child_to_parent_data_pipe[1], 3);
+     if (dup2(to_child[READ], fd_in) == -1) {
+         perror("dup2 to fd_in failed");
+         _exit(1);
+     }
+     if (dup2(from_child[WRITE], fd_out) == -1) {
+         perror("dup2 to fd_out failed");
+         _exit(1);
+     }
 
-    // Close the original file descriptors, as dup2 has copied them
-    close(parent_to_child_data_pipe[0]);
-    close(child_to_parent_data_pipe[1]);
-    close(child_to_parent_output_pipe[1]);
+     char user_problem_size_buffer[128];
+     char fd_in_buffer[16];
+     char fd_out_buffer[16];
+     snprintf(user_problem_size_buffer, sizeof(user_problem_size_buffer), "%ld", user_problem_size);
+     snprintf(fd_in_buffer, sizeof(fd_in_buffer), "%d", fd_in);
+     snprintf(fd_out_buffer, sizeof(fd_out_buffer), "%d", fd_out);
 
-    // Prepare arguments for the execve call
-    char user_problem_size_str[128];
-    snprintf(user_problem_size_str, sizeof(user_problem_size_str), "%zu", user_problem_size);
-    char* child_args[] = { (char*)"cpp/build/barrier", user_problem_size_str, NULL };
-
-    // Execute the child program  
-    execve(child_args[0], child_args, NULL);
-
-    // If execve fails, this code will be reached
-    perror("execve failed");
-    exit(1);
+     char* args[] = {const_cast<char*>("./child_program"), fd_in_buffer, fd_out_buffer, user_problem_size_buffer, nullptr};
+     execv(args[0], args);
+     perror("execv");
+     _exit(1);
   }
   else {
-    // --- PARENT PROCESS ---
-    // Close unused ends of pipes
-    close(parent_to_child_pipe[0]);
-    close(child_to_parent_pipe[1]);
+    // === Parent ===
+    close(to_child[READ]);    // unused
+    close(from_child[WRITE]);  // unused
 
     // Prepare and send data to child
     char *user_problem_buffer = new char[user_problem_size];
     user_problem.serialize(user_problem_buffer);
-    write_all(parent_to_child_data_pipe[1], user_problem_buffer, user_problem_size);
+    write_all(to_child[WRITE], user_problem_buffer, user_problem_size);
     delete[] user_problem_buffer;
-    close(parent_to_child_data_pipe[1]); // Signal EOF to child
+    close(to_child[WRITE]); // Signal EOF to child
     
     fd_set read_fds;
     struct timeval timeout;
@@ -424,7 +439,7 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
 
     while (1) {
       FD_ZERO(&read_fds);
-      FD_SET(child_to_parent_data_pipe[0], &read_fds);
+      FD_SET(from_child[READ], &read_fds);
         
         // Set a short timeout for the select() call (100ms)
         timeout.tv_sec = 0;
@@ -432,7 +447,7 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
 
 
         std::cout << "Parent: Polling child " << std::endl;
-        int select_result = select(child_to_parent_data_pipe[0] + 1, &read_fds, NULL, NULL, &timeout);
+        int select_result = select(from_child[READ] + 1, &read_fds, NULL, NULL, &timeout);
 
         // Check if another solver has finished
         if (settings.concurrent_halt != nullptr && settings.concurrent_halt->load(std::memory_order_acquire) == 1) {
@@ -455,7 +470,7 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
 
     if (child_finished) {
         char *received_buffer = new char[transfer_size];
-        if (read_all(child_to_parent_data_pipe[0], received_buffer, transfer_size) == transfer_size) {
+        if (read_all(from_child[READ], received_buffer, transfer_size) == transfer_size) {
             i_t status_int = solution.deserialize(received_buffer);
             status = static_cast<dual_simplex::lp_status_t>(status_int);
         } else {
@@ -464,15 +479,14 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
         delete[] received_buffer;
     }
 
-    close(child_to_parent_data_pipe[0]); // Close read end
-    close(child_to_parent_output_pipe[0]); // Close read end
+    close(from_child[READ]); // Close read end
 
-    int status;
+    int child_status;
     waitpid(child_pid, &status, 0); // Wait for child to exit and reap it
-    if (WIFEXITED(status)) {
-        std::cout << "Parent: Child process finished with status " << WEXITSTATUS(status) << std::endl;
-    } else if (WIFSIGNALED(status)) {
-        std::cout << "Parent: Child process was terminated by signal " << WTERMSIG(status) << std::endl;
+    if (WIFEXITED(child_status)) {
+        std::cout << "Parent: Child process finished with status " << WEXITSTATUS(child_status) << std::endl;
+    } else if (WIFSIGNALED(child_status)) {
+        std::cout << "Parent: Child process was terminated by signal " << WTERMSIG(child_status) << std::endl;
     }
   }
   return status;
