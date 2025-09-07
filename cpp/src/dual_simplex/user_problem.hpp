@@ -112,6 +112,7 @@ struct user_problem_t {
     row_sense.resize(num_rows);
     lower.resize(num_cols);
     upper.resize(num_cols);
+    num_range_rows = 0;
 
     memcpy(objective.data(), buffer + bytes_read, num_cols * sizeof(f_t));
     bytes_read += num_cols * sizeof(f_t);
