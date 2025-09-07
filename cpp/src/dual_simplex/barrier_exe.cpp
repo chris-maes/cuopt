@@ -10,6 +10,65 @@
 #include <unistd.h>
 #include <numeric>
 #include <errno.h>
+#include <iostream>
+
+// CUDA test function
+__global__ void cuda_test_kernel(float* data, int n) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        data[idx] = data[idx] * 2.0f;
+    }
+}
+
+bool test_cuda() {
+    try {
+        // Test basic CUDA operations
+        int device_count;
+        cudaError_t err = cudaGetDeviceCount(&device_count);
+        if (err != cudaSuccess) {
+            std::cerr << "CUDA error getting device count: " << cudaGetErrorString(err) << std::endl;
+            return false;
+        }
+        
+        if (device_count == 0) {
+            std::cerr << "No CUDA devices found" << std::endl;
+            return false;
+        }
+        
+        std::cout << "Found " << device_count << " CUDA device(s)" << std::endl;
+        
+        // Test memory allocation
+        float* d_data;
+        const int n = 1024;
+        err = cudaMalloc(&d_data, n * sizeof(float));
+        if (err != cudaSuccess) {
+            std::cerr << "CUDA error allocating memory: " << cudaGetErrorString(err) << std::endl;
+            return false;
+        }
+        
+        // Test kernel launch
+        dim3 block(256);
+        dim3 grid((n + block.x - 1) / block.x);
+        cuda_test_kernel<<<grid, block>>>(d_data, n);
+        
+        err = cudaDeviceSynchronize();
+        if (err != cudaSuccess) {
+            std::cerr << "CUDA error in kernel execution: " << cudaGetErrorString(err) << std::endl;
+            cudaFree(d_data);
+            return false;
+        }
+        
+        // Clean up
+        cudaFree(d_data);
+        
+        std::cout << "CUDA test passed successfully!" << std::endl;
+        return true;
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Exception in CUDA test: " << e.what() << std::endl;
+        return false;
+    }
+}
 
 
 
@@ -44,6 +103,13 @@ ssize_t write_all(int fd, const void* buf, size_t count) {
 int main(int argc, char** argv) {
     if (argc != 4) {
         std::cerr << "Usage: " << argv[0] << " fd_in fd_out data_size" << std::endl;
+        return 1;
+    }
+
+    // Test CUDA functionality first
+    std::cout << "Testing CUDA functionality..." << std::endl;
+    if (!test_cuda()) {
+        std::cerr << "CUDA test failed!" << std::endl;
         return 1;
     }
 

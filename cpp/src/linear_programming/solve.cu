@@ -414,7 +414,7 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
      snprintf(fd_in_buffer, sizeof(fd_in_buffer), "%d", fd_in);
      snprintf(fd_out_buffer, sizeof(fd_out_buffer), "%d", fd_out);
 
-     char* args[] = {const_cast<char*>("./child_program"), fd_in_buffer, fd_out_buffer, user_problem_size_buffer, nullptr};
+     char* args[] = {const_cast<char*>("./cpp/build/barrier"), fd_in_buffer, fd_out_buffer, user_problem_size_buffer, nullptr};
      execv(args[0], args);
      perror("execv");
      _exit(1);
@@ -482,7 +482,7 @@ dual_simplex::lp_status_t barrier_process(dual_simplex::user_problem_t<i_t, f_t>
     close(from_child[READ]); // Close read end
 
     int child_status;
-    waitpid(child_pid, &status, 0); // Wait for child to exit and reap it
+    waitpid(child_pid, &child_status, 0); // Wait for child to exit and reap it
     if (WIFEXITED(child_status)) {
         std::cout << "Parent: Child process finished with status " << WEXITSTATUS(child_status) << std::endl;
     } else if (WIFSIGNALED(child_status)) {
