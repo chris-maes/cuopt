@@ -5,6 +5,8 @@
 #include <dual_simplex/simplex_solver_settings.hpp>
 
 #include <raft/core/handle.hpp>
+#include <cublas_v2.h>
+#include <cusparse.h>
 
 #include <string>
 #include <unistd.h>
@@ -99,6 +101,20 @@ ssize_t write_all(int fd, const void* buf, size_t count) {
     return bytes_written;
 }
 
+// This serves as both a warm up but also a mandatory initial call to setup cuSparse and cuBLAS
+static void init_handler(const raft::handle_t* handle_ptr)
+{
+  // Init cuBlas / cuSparse context here to avoid having it during solving time
+  cublasStatus_t cublas_status = cublasSetPointerMode(handle_ptr->get_cublas_handle(), CUBLAS_POINTER_MODE_DEVICE);
+  if (cublas_status != CUBLAS_STATUS_SUCCESS) {
+    throw std::runtime_error("Failed to set cuBLAS pointer mode");
+  }
+  
+  cusparseStatus_t cusparse_status = cusparseSetPointerMode(handle_ptr->get_cusparse_handle(), CUSPARSE_POINTER_MODE_DEVICE);
+  if (cusparse_status != CUSPARSE_STATUS_SUCCESS) {
+    throw std::runtime_error("Failed to set cuSPARSE pointer mode");
+  }
+}
 
 int main(int argc, char** argv) {
     if (argc != 4) {
@@ -129,28 +145,21 @@ int main(int argc, char** argv) {
     namespace dual_simplex = cuopt::linear_programming::dual_simplex;
 
     raft::handle_t handle;
-    printf("Child: Deserializing user problem\n");
+    
+    // Initialize CUDA libraries
+    init_handler(&handle);
+    
     dual_simplex::user_problem_t<int, double> user_problem(&handle);
     user_problem.deserialize(buffer);
-    printf("Child: User problem deserialized\n");
-    
+
     dual_simplex::lp_solution_t<int, double> solution(user_problem.num_rows, user_problem.num_cols);
     dual_simplex::simplex_solver_settings_t<int, double> simplex_settings;
-    simplex_settings.log.log = true;
-    simplex_settings.log.log_to_console = true;
-    simplex_settings.log.enable_log_to_file();
-    simplex_settings.log.set_log_file("barrier.log");
-    printf("Child: Solving linear program with barrier\n");
     dual_simplex::lp_status_t status = dual_simplex::solve_linear_program_with_barrier<int, double>(user_problem, simplex_settings, solution);
-    printf("Child: Linear program with barrier solved\n");
-    printf("Child: Serializing solution\n");
+
     char *result_buffer = new char[solution.bytes_required()];
     solution.serialize(result_buffer, static_cast<int>(status));
-    printf("Child: Solution serialized\n");
-    // Write data to the file descriptor
-    printf("Child: Writing solution to file descriptor\n");
+    // --- CHILD: RETURN DATA TO PARENT VIA STDOUT ---
     write_all(fd_out, result_buffer, solution.bytes_required());
-    printf("Child: Solution written to file descriptor\n");
     delete[] result_buffer;
     delete[] buffer;
 

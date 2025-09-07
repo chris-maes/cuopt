@@ -300,7 +300,7 @@ target_link_libraries(cuopt
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dual_simplex/vector_math.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/dual_simplex/pinned_host_allocator.cu
   )
-add_executable(barrier ${CMAKE_CURRENT_SOURCE_DIR}/src/dual_simplex/barrier_exe.cpp ${DUAL_SIMPLEX_SRC_FILES})
+add_executable(barrier ${CMAKE_CURRENT_SOURCE_DIR}/src/dual_simplex/barrier_exe.cu ${DUAL_SIMPLEX_SRC_FILES})
 
 target_include_directories(barrier SYSTEM PRIVATE "${papilo_SOURCE_DIR}/src" "${papilo_BINARY_DIR}")
 

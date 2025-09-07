@@ -99,6 +99,7 @@ struct user_problem_t {
     bytes_read += sizeof(i_t);
     i_t nnz;
     memcpy(&nnz, buffer + bytes_read, sizeof(i_t));
+    bytes_read += sizeof(i_t);
 
     // Make sure all the data is the correct size 
     objective.resize(num_cols);
