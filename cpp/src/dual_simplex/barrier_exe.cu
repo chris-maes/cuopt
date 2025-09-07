@@ -79,11 +79,13 @@ ssize_t read_all(int fd, void* buf, size_t count) {
     while (bytes_read < count) {
         ssize_t result = read(fd, static_cast<char*>(buf) + bytes_read, count - bytes_read);
         if (result == -1) {
+            printf("Error reading from file descriptor: %s\n", strerror(errno));
             if (errno == EINTR) continue;
             return -1;
         }
         if (result == 0) return bytes_read;
         bytes_read += result;
+        printf("Read %ld/%ld bytes\n", bytes_read, count);
     }
     return bytes_read;
 }
