@@ -1080,7 +1080,8 @@ class iteration_data_t {
       // settings.log.printf("Column %6d delta nz %d\n", j, delta_nz[j]);
       nnz_C += delta_nz[j];
       cumulative_nonzeros[k] = static_cast<f_t>(nnz_C);
-      if (0 && n - k < 10) {
+#ifdef DEBUG
+      if (n - k < 10) {
         settings.log.printf("Cumulative nonzeros %ld %6.2e k %6d delta nz %ld col %6d\n",
                             nnz_C,
                             cumulative_nonzeros[k],
@@ -1088,6 +1089,7 @@ class iteration_data_t {
                             delta_nz[j],
                             j);
       }
+#endif
     }
     settings.log.printf("Cumulative nonzeros %ld %6.2e\n", nnz_C, cumulative_nonzeros[n - 1]);
 
@@ -1100,16 +1102,19 @@ class iteration_data_t {
       f_t delta_nz_j  = std::max(static_cast<f_t>(col_nz * col_nz),
                                 cumulative_nonzeros[k] - cumulative_nonzeros[k - 1]);
       const f_t ratio = delta_nz_j / total_nz_estimate;
-      if (ratio > .01) {
 #ifdef DEBUG
+      if (n - k < 500) {
         settings.log.printf(
-          "Column: nz %10d cumulative nz %6.2e estimated delta nz %6.2e percent %.2f col %6d\n",
+          "Column: nz %10d cumulative nz %6.2e estimated delta nz %6.2e percent %.2f col %6d ratio %e\n",
           col_nz,
           cumulative_nonzeros[k],
           delta_nz_j,
           ratio,
-          j);
+          j,
+          ratio);
+      }
 #endif
+      if (ratio > .01 || delta_nz_j > 4e6) {
         columns_to_remove.push_back(j);
       }
     }
