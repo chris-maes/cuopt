@@ -27,6 +27,9 @@
 #include <queue>
 #include <cmath>
 #include <iostream>
+#include <functional>
+#include <optional>
+
 
 namespace cuopt::linear_programming::dual_simplex {
 
@@ -789,6 +792,188 @@ struct color_t {
   std::unordered_set<i_t> vertices;
 };
 
+
+struct fuzzy_double_t {
+  double value;
+  long long canonical;
+  static constexpr double tolerance = 1e-6;
+
+  // Use extreme values of long long as canonical sentinels
+  static constexpr long long canonical_nan = std::numeric_limits<long long>::min();
+  static constexpr long long canonical_pos_inf = std::numeric_limits<long long>::min() + 1;
+  static constexpr long long canonical_neg_inf = std::numeric_limits<long long>::min() + 2;
+
+  fuzzy_double_t(double val) : value(val) {
+      if (std::isnan(val)) {
+          canonical = canonical_nan;
+      } else if (std::isinf(val)) {
+          canonical = (val > 0) ? canonical_pos_inf : canonical_neg_inf;
+      } else {
+          // Ensure the result of round is within representable long long range
+          // This implicitly handles potential overflow during cast for huge numbers
+          double scaled_value = val / tolerance;
+          if (scaled_value > std::numeric_limits<long long>::max()) {
+              canonical = std::numeric_limits<long long>::max();
+          } else if (scaled_value < std::numeric_limits<long long>::min() + 3) { // +3 to avoid conflicts with sentinels
+              canonical = std::numeric_limits<long long>::min() + 3; // Clamp to avoid sentinel conflict
+          } else {
+              canonical = static_cast<long long>(std::round(scaled_value));
+          }
+      }
+  }
+
+  operator double() const {
+    return value;
+  }
+};
+
+
+// Equality operator compares the canonical values
+bool operator==(const fuzzy_double_t& a, const fuzzy_double_t& b) {
+  // Two NaNs are not considered equal based on IEEE 754 behavior
+#ifdef NANS_NOT_EQUAL
+  if (a.canonical == fuzzy_double_t::canonical_nan && b.canonical == fuzzy_double_t::canonical_nan) {
+      return false;
+  }
+#endif
+  return a.canonical == b.canonical;
+}
+
+// Hash function uses the canonical value
+
+
+template <typename T>
+class fuzzy_map_t {
+public:
+    // Operator[] for insertion and modification
+    T& operator[](double key) {
+        fuzzy_double_t fuzzy_key(key);
+
+        // Find existing value using the fuzzy lookup
+        T* existing = find_fuzzy_ref(key);
+
+        // If a fuzzy match exists, return a reference to it
+        if (existing) {
+            return *existing;
+        }
+
+        // No fuzzy match found, insert a new element and return a reference
+        return map[fuzzy_key];
+    }
+
+    // Operator[] for const lookup (read-only)
+    const T& operator[](double key) const {
+        const T* existing = find_fuzzy_ref_const(key);
+
+        if (existing) {
+            return *existing;
+        }
+
+        // Handle lookup failure
+        throw std::out_of_range("Key not found in fuzzy_map_t.");
+    }
+
+    // A find method that returns an optional
+    std::optional<std::reference_wrapper<T>> find(double key) {
+        T* ptr = find_fuzzy_ref(key);
+        if (ptr) {
+            return std::reference_wrapper<T>(*ptr);
+        }
+        return std::nullopt;
+    }
+
+private:
+    std::unordered_map<fuzzy_double_t, T> map;
+
+    // Internal helper for mutable fuzzy lookup
+    T* find_fuzzy_ref(double target_val) {
+        fuzzy_double_t target_key(target_val);
+
+        // Search the primary bucket
+        auto it = map.find(target_key);
+        if (it != map.end() && std::abs(it->first.value - target_val) < fuzzy_double_t::tolerance) {
+            return &it->second;
+        }
+
+        // Check adjacent canonical buckets
+        long long canonical_target = target_key.canonical;
+
+        if (canonical_target - 1 > fuzzy_double_t::canonical_neg_inf) {
+            it = map.find(fuzzy_double_t{static_cast<double>(canonical_target - 1) * fuzzy_double_t::tolerance});
+            if (it != map.end() && std::abs(it->first.value - target_val) < fuzzy_double_t::tolerance) {
+                return &it->second;
+            }
+        }
+
+        if (canonical_target + 1 > fuzzy_double_t::canonical_neg_inf) {
+            it = map.find(fuzzy_double_t{static_cast<double>(canonical_target + 1) * fuzzy_double_t::tolerance});
+            if (it != map.end() && std::abs(it->first.value - target_val) < fuzzy_double_t::tolerance) {
+                return &it->second;
+            }
+        }
+
+        return nullptr;
+    }
+
+    // Internal helper for const fuzzy lookup
+    const T* find_fuzzy_ref_const(double target_val) const {
+        fuzzy_double_t target_key(target_val);
+
+        auto it = map.find(target_key);
+        if (it != map.end() && std::abs(it->first.value - target_val) < fuzzy_double_t::tolerance) {
+            return &it->second;
+        }
+
+        long long canonical_target = target_key.canonical;
+
+        if (canonical_target - 1 > fuzzy_double_t::canonical_neg_inf) {
+            it = map.find(fuzzy_double_t{static_cast<double>(canonical_target - 1) * fuzzy_double_t::tolerance});
+            if (it != map.end() && std::abs(it->first.value - target_val) < fuzzy_double_t::tolerance) {
+                return &it->second;
+            }
+        }
+
+        if (canonical_target + 1 > fuzzy_double_t::canonical_neg_inf) {
+            it = map.find(fuzzy_double_t{static_cast<double>(canonical_target + 1) * fuzzy_double_t::tolerance});
+            if (it != map.end() && std::abs(it->first.value - target_val) < fuzzy_double_t::tolerance) {
+                return &it->second;
+            }
+        }
+
+        return nullptr;
+    }
+ public:
+    // Additional methods needed for compatibility with std::unordered_map
+    void clear() {
+        map.clear();
+    }
+
+    size_t size() const {
+        return map.size();
+    }
+
+    bool empty() const {
+        return map.empty();
+    }
+
+    auto begin() {
+        return map.begin();
+    }
+
+    auto end() {
+        return map.end();
+    }
+
+    auto begin() const {
+        return map.begin();
+    }
+
+    auto end() const {
+        return map.end();
+    }
+};
+
+
 constexpr int8_t kRow = 0;
 constexpr int8_t kCol = 1;
 constexpr int8_t kActive = 1;
@@ -1071,8 +1256,8 @@ void split_colors(i_t color,
                   i_t refining_color,
                   int8_t side_being_split,
                   std::vector<f_t>& vertex_to_sum,
-                  std::unordered_map<f_t, std::vector<i_t>>& color_sums,
-                  std::unordered_map<f_t, i_t>& sum_to_sizes,
+                  fuzzy_map_t<std::vector<i_t>>& color_sums,
+                  fuzzy_map_t<i_t>& sum_to_sizes,
                   std::vector<color_t<i_t>>& colors,
                   std::vector<i_t>& color_stack,
                   std::vector<i_t>& color_in_stack,
@@ -1127,13 +1312,17 @@ void split_colors(i_t color,
   }
   bool only_one = sum_to_sizes.size() == 1;
   if (only_one) {
-    printf("Color %d has only one sum. color_sums size %ld. In stack %d\n", color, color_sums.size(), in_stack);
-    exit(1);
+    printf("Color %d has only one sum. color_sums size %ld. In stack %d. min sum by color %.16e max sum by color %.16e\n", color, color_sums.size(), in_stack, min_sum_by_color[color], max_sum_by_color[color]);
+    vertices_to_refine_by_color[color].clear();
+    max_sum_by_color[color] = std::numeric_limits<f_t>::quiet_NaN();
+    min_sum_by_color[color] = std::numeric_limits<f_t>::quiet_NaN();
+    return;
   }
 
   i_t vertices_considered = 0;
-  for (auto& [sum, vertices] : color_sums) {
+  for (auto& [sum_val, vertices] : color_sums) {
     i_t size = vertices.size();
+    f_t sum = sum_val;
     if (sum == 0.0) {
       const i_t additional_size =
         (colors[color].vertices.size() - vertices_to_refine_by_color[color].size());
@@ -1221,8 +1410,8 @@ void color_lower_bounds(const csc_matrix_t<i_t, f_t>& A,
     col_sums[j] = sum;
   }
 
-  std::unordered_map<f_t, i_t> unique_row_sums;
-  std::unordered_map<f_t, i_t> unique_col_sums;
+  fuzzy_map_t<i_t> unique_row_sums;
+  fuzzy_map_t<i_t> unique_col_sums;
   for (i_t i = 0; i < m; i++) {
     unique_row_sums[row_sums[i]]++;
   }
@@ -1294,8 +1483,8 @@ i_t color_graph(const csc_matrix_t<i_t, f_t>& A,
   color_in_stack[0] = 1;
   color_in_stack[1] = 1;
 
-  std::unordered_map<f_t, std::vector<i_t>> color_sums;
-  std::unordered_map<f_t, i_t> sum_to_sizes;
+  fuzzy_map_t<std::vector<i_t>> color_sums;
+  fuzzy_map_t<i_t> sum_to_sizes;
 
   std::vector<std::vector<i_t>> vertices_to_refine_by_color(max_colors);
   std::vector<f_t> max_sum_by_color(max_colors, std::numeric_limits<f_t>::quiet_NaN());
@@ -1672,8 +1861,8 @@ void folding(lp_problem_t<i_t, f_t>& problem)
   i_t num_colors;
   i_t total_colors_seen;
   f_t color_start_time = tic();
-  i_t row_threshold = static_cast<i_t>( .50 * static_cast<f_t>(m));
-  i_t col_threshold = static_cast<i_t>( .50 * static_cast<f_t>(n));
+  i_t row_threshold = static_cast<i_t>( .90 * static_cast<f_t>(m));
+  i_t col_threshold = static_cast<i_t>( .90 * static_cast<f_t>(n));
   i_t status = color_graph(augmented, colors, row_threshold, col_threshold, num_row_colors, num_col_colors, num_colors, total_colors_seen);
   if (status != 0) {
     printf("Folding: Coloring aborted\n");
@@ -2903,3 +3092,13 @@ template bool bound_strengthening<int, double>(
 #endif
 
 }  // namespace cuopt::linear_programming::dual_simplex
+
+// Hash function specialization for fuzzy_double_t
+namespace std {
+template <>
+struct hash<cuopt::linear_programming::dual_simplex::fuzzy_double_t> {
+  std::size_t operator()(const cuopt::linear_programming::dual_simplex::fuzzy_double_t& d) const {
+      return std::hash<long long>()(d.canonical);
+  }
+};
+}  // namespace std
