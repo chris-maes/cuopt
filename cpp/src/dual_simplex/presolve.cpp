@@ -2418,25 +2418,31 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
        (settings.dualize == -1 && less_rows > 1.2 * problem.num_cols && equal_rows < 2e4))) {
     settings.log.printf("Dualizing in presolve\n");
 
+    i_t num_lower_bounds = 0;
     i_t num_upper_bounds = 0;
+    std::vector<i_t> vars_with_lower_bounds;
     std::vector<i_t> vars_with_upper_bounds;
+    vars_with_lower_bounds.reserve(problem.num_cols);
     vars_with_upper_bounds.reserve(problem.num_cols);
-    bool can_dualize = true;
     for (i_t j = 0; j < problem.num_cols; j++) {
-      if (problem.lower[j] != 0.0) {
-        settings.log.printf("Variable %d has a nonzero lower bound %e\n", j, problem.lower[j]);
-        can_dualize = false;
-        break;
+      if (problem.lower[j] > -inf) {
+        num_lower_bounds++;
+        vars_with_lower_bounds.push_back(j);
+      } else {
+        printf("Variable %d has a -inf lower bound. upper bound %e\n", j, problem.upper[j]);
       }
       if (problem.upper[j] < inf) {
         num_upper_bounds++;
         vars_with_upper_bounds.push_back(j);
       }
     }
+    printf("num_lower_bounds %d num_upper_bounds %d\n", num_lower_bounds, num_upper_bounds);
 
+    std::vector<i_t> column_nz(problem.num_rows, 0);
     i_t max_column_nz = 0;
     for (i_t j = 0; j < problem.num_cols; j++) {
       const i_t col_nz = problem.A.col_start[j + 1] - problem.A.col_start[j];
+      column_nz[col_nz]++;
       max_column_nz    = std::max(col_nz, max_column_nz);
     }
 
@@ -2449,73 +2455,118 @@ void convert_user_problem(const user_problem_t<i_t, f_t>& user_problem,
       }
     }
 
+    std::vector<i_t> row_nz(problem.num_cols, 0);
     i_t max_row_nz = 0;
     for (i_t i = 0; i < problem.num_rows; i++) {
+      row_nz[row_degree[i]]++;
       max_row_nz = std::max(row_degree[i], max_row_nz);
     }
-    settings.log.printf("max row nz %d max col nz %d\n", max_row_nz, max_column_nz);
 
-    if (settings.dualize == -1 && max_row_nz > 1e4 && max_column_nz < max_row_nz) {
-      can_dualize = false;
+    for (i_t i = 0; i < problem.num_rows; i++) {
+      if (column_nz[i] > 0) {
+        printf("Col nz %d %d\n",i, column_nz[i]);
+      }
+    }
+    for (i_t j = 0; j < problem.num_cols; j++) {
+      if (row_nz[j] > 0) {
+        printf("Row nz %d %d\n", j, row_nz[j]);
+      }
     }
 
-    if (can_dualize) {
+
+
+    settings.log.printf("max row nz %d max col nz %d\n", max_row_nz, max_column_nz);
+    bool should_dualize = true;
+    if (settings.dualize == -1 && max_row_nz > 1e4 && max_column_nz < max_row_nz) {
+      should_dualize = false;
+    }
+    printf("should_dualize %d\n", should_dualize);
+
+    if (should_dualize) {
       i_t dual_rows = problem.num_cols;
-      i_t dual_cols = problem.num_rows + problem.num_cols + num_upper_bounds;
+      i_t dual_cols = problem.num_rows + num_lower_bounds + num_upper_bounds;
       lp_problem_t<i_t, f_t> dual_problem(problem.handle_ptr, 1, 1, 0);
       csc_matrix_t<i_t, f_t> dual_constraint_matrix(1, 1, 0);
       problem.A.transpose(dual_constraint_matrix);
-      // dual_constraint_matrix <- [-A^T I I]
+      // dual_constraint_matrix <- [A^T I I]
       dual_constraint_matrix.m = dual_rows;
       dual_constraint_matrix.n = dual_cols;
       i_t nnz                  = dual_constraint_matrix.col_start[problem.num_rows];
-      i_t new_nnz              = nnz + problem.num_cols + num_upper_bounds;
+      i_t new_nnz              = nnz + num_lower_bounds + num_upper_bounds;
       dual_constraint_matrix.col_start.resize(dual_cols + 1);
       dual_constraint_matrix.i.resize(new_nnz);
       dual_constraint_matrix.x.resize(new_nnz);
-      for (i_t p = 0; p < nnz; p++) {
-        dual_constraint_matrix.x[p] *= -1.0;
-      }
-      i_t i = 0;
-      for (i_t j = problem.num_rows; j < problem.num_rows + problem.num_cols; j++) {
+      for (i_t k = 0; k < num_lower_bounds; k++) {
+        i_t j = problem.num_rows + k;
         dual_constraint_matrix.col_start[j] = nnz;
-        dual_constraint_matrix.i[nnz]       = i++;
+        dual_constraint_matrix.i[nnz]       = vars_with_lower_bounds[k];
         dual_constraint_matrix.x[nnz]       = 1.0;
         nnz++;
       }
       for (i_t k = 0; k < num_upper_bounds; k++) {
-        i_t p                               = problem.num_rows + problem.num_cols + k;
-        dual_constraint_matrix.col_start[p] = nnz;
+        i_t j                               = problem.num_rows + num_lower_bounds + k;
+        dual_constraint_matrix.col_start[j] = nnz;
         dual_constraint_matrix.i[nnz]       = vars_with_upper_bounds[k];
         dual_constraint_matrix.x[nnz]       = -1.0;
         nnz++;
       }
+      i_t empty_cols = 0;
+      for (i_t j = 0; j < dual_cols; j++) {
+        if (dual_constraint_matrix.col_start[j + 1] - dual_constraint_matrix.col_start[j] == 0) {
+          empty_cols++;
+        }
+      }
+      printf("empty cols in dual problem %d\n", empty_cols);
+
       dual_constraint_matrix.col_start[dual_cols] = nnz;
       settings.log.printf("dual_constraint_matrix nnz %d predicted %d\n", nnz, new_nnz);
       dual_problem.num_rows = dual_rows;
       dual_problem.num_cols = dual_cols;
       dual_problem.objective.resize(dual_cols, 0.0);
       for (i_t j = 0; j < problem.num_rows; j++) {
-        dual_problem.objective[j] = problem.rhs[j];
+        dual_problem.objective[j] = -problem.rhs[j];
+      }
+      for (i_t k = 0; k < num_lower_bounds; k++) {
+        const i_t j = problem.num_rows + k;
+        dual_problem.objective[j] = -problem.lower[vars_with_lower_bounds[k]];
       }
       for (i_t k = 0; k < num_upper_bounds; k++) {
-        i_t j                     = problem.num_rows + problem.num_cols + k;
+        const i_t j = problem.num_rows + num_lower_bounds + k;
         dual_problem.objective[j] = problem.upper[vars_with_upper_bounds[k]];
       }
       dual_problem.A     = dual_constraint_matrix;
       dual_problem.rhs   = problem.objective;
       dual_problem.lower = std::vector<f_t>(dual_cols, 0.0);
       dual_problem.upper = std::vector<f_t>(dual_cols, inf);
+      for (i_t j = 0; j < problem.num_rows; j++) {
+        dual_problem.lower[j] = -inf;
+        dual_problem.upper[j] = 0.0;
+      }
       for (i_t j : equality_rows) {
         dual_problem.lower[j] = -inf;
+        dual_problem.upper[j] = inf;
       }
       dual_problem.obj_constant = 0.0;
       dual_problem.obj_scale    = -1.0;
 
+      printf("dual problem num_rows %d num_cols %d\n", dual_problem.num_rows, dual_problem.num_cols);
+      printf("dual constraint matrix m %d n %d\n", dual_problem.A.m, dual_problem.A.n);
+      printf("dual constraint matrix nnz %d\n", dual_problem.A.col_start[dual_problem.A.n]);
+      printf("dual lower size %ld\n", dual_problem.lower.size());
+      printf("dual upper size %ld\n", dual_problem.upper.size());
+      printf("dual objective size %ld\n", dual_problem.objective.size());
+      printf("dual rhs size %ld\n", dual_problem.rhs.size());
+
       equal_rows = problem.num_cols;
       less_rows  = 0;
 
+      equality_rows = std::vector<i_t>(problem.num_cols);
+      for (i_t i = 0; i < problem.num_cols; i++) {
+        equality_rows[i] = i;
+      }
+      row_sense = std::vector<char>(dual_problem.num_rows, 'E');
       problem = dual_problem;
+      new_slacks.clear();
 
       settings.log.printf("Solving the dual\n");
     }
@@ -2548,9 +2599,26 @@ i_t presolve(const lp_problem_t<i_t, f_t>& original,
   for (i_t j = 0; j < problem.num_cols; j++) {
     if (problem.lower[j] == -inf && problem.upper[j] < inf) { no_lower_bound++; }
   }
-#ifdef PRINT_INFO
-  settings.log.printf("%d variables with no lower bound\n", no_lower_bound);
-#endif
+
+  if (settings.barrier_presolve && no_lower_bound > 0) {
+    settings.log.printf("%d variables with no lower bound\n", no_lower_bound);
+    // We have a variable x_j with -inf < x_j <= u_j < inf
+    // Create a new variable x'_j = - x_j
+    // Then we have -u_j <= x'_j  < inf
+    for (i_t j = 0; j < problem.num_cols; j++) {
+      if (problem.lower[j] == -inf && problem.upper[j] < inf) {
+        const i_t col_start = problem.A.col_start[j];
+        const i_t col_end   = problem.A.col_start[j + 1];
+        for (i_t p = col_start; p < col_end; p++) {
+          problem.A.x[p] = -problem.A.x[p];
+        }
+        problem.objective[j] = -problem.objective[j];
+        problem.lower[j] = -problem.upper[j];
+        problem.upper[j] = inf;
+      }
+    }
+  }
+
   // The original problem may have nonzero lower bounds
   // 0 != l_j <= x_j <= u_j
   i_t nonzero_lower_bounds = 0;
