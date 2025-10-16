@@ -45,7 +45,8 @@ class barrier_solver_t {
                    const simplex_solver_settings_t<i_t, f_t>& settings);
   lp_status_t solve(f_t start_time,
                     const barrier_solver_settings_t<i_t, f_t>& options,
-                    lp_solution_t<i_t, f_t>& solution);
+                    lp_solution_t<i_t, f_t>& solution,
+                    std::vector<f_t>& perturbation);
 
  private:
   void my_pop_range(bool debug) const;
@@ -99,6 +100,11 @@ class barrier_solver_t {
                                   f_t& primal_residual_norm,
                                   f_t& dual_residual_norm,
                                   f_t& complementarity_residual_norm);
+
+
+  void compute_perturbation(const dense_vector_t<i_t, f_t>& x,
+                            iteration_data_t<i_t, f_t>& data,
+                            std::vector<f_t>& perturbation);
 
   // To be able to directly pass lambdas to transform functions
  public:

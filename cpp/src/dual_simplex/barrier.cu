@@ -3155,6 +3155,104 @@ void barrier_solver_t<i_t, f_t>::compute_primal_dual_objective(iteration_data_t<
   }
 }
 
+
+template <typename i_t, typename f_t>
+void barrier_solver_t<i_t, f_t>::compute_perturbation(const dense_vector_t<i_t, f_t>& x,
+                                                      iteration_data_t<i_t, f_t>& data,
+                                                      std::vector<f_t>& perturbation)
+{
+  const i_t n = lp.num_cols;
+  const i_t m = lp.num_rows;
+  perturbation.resize(n);
+
+  if (data.n_dense_columns > 0 || data.use_augmented) {
+    return;  // We don't handle the dense column case yet or the augmented case yet
+  }
+
+  // First compute cc = Xc
+  dense_vector_t<i_t, f_t> cc(n);
+  data.c.pairwise_product(x, cc);
+
+
+  // We want to solve the problem
+  // minimize     || z - cc ||_2^2
+  // subject to    z = X^{-1} * y
+  //               A*y = 0
+  // The solution is given by
+  // X^{-2} y - X^{-1} * cc + A^T v = 0
+  // A y                           = 0
+
+  // We first solve for v via
+  // A X^{-2} A^T v = A X^{-1} cc
+  for (i_t j = 0; j < n; j++) {
+    f_t x_sq = x[j] * x[j];
+    data.diag[j] = 1.0 / x_sq;
+    data.inv_diag[j] = x_sq;
+  }
+  // Copy host vector inv_diag to device
+  raft::copy(data.d_inv_diag.data(), data.inv_diag.data(), data.inv_diag.size(), stream_view_);
+  settings.log.printf("copied inv_diag to device\n");
+  RAFT_CUDA_TRY(cudaStreamSynchronize(stream_view_));
+
+  // compute ADAT = A Dinv * A^T
+  data.form_adat();
+  // factorize
+  i_t status;
+  if (use_gpu) {
+   status = data.chol->factorize(data.device_ADAT);
+  } else {
+   status = data.chol->factorize(data.ADAT);
+  }
+  if (status != 0) {
+    settings.log.printf("Failed to factorize ADAT\n");
+    return;
+  }
+
+  // Compute the rhs = A X^{-1} cc = A X^{-1} X c = A c
+  dense_vector_t<i_t, f_t> rhs(m);
+  matrix_vector_multiply(lp.A, 1.0, data.c, 0.0, rhs);
+
+  settings.log.printf("try to copy rhs to device\n");
+  settings.log.printf("rhs size %ld\n", rhs.size());
+  settings.log.printf("data.d_h_ size %ld\n", data.d_h_.size());
+  raft::copy(data.d_h_.data(), rhs.data(), rhs.size(), stream_view_);
+  settings.log.printf("copied rhs to device\n");
+
+  // Solve for v (Replace with gpu_solve_adat to handle dense columns)
+  data.chol->solve(data.d_h_, data.d_dy_);
+  std::vector<f_t> v(m);
+  settings.log.printf("try to copy v to host\n");
+  raft::copy(v.data(), data.d_dy_.data(), data.d_dy_.size(), stream_view_);
+  settings.log.printf("copied v to host\n");
+  RAFT_CUDA_TRY(cudaStreamSynchronize(stream_view_));
+
+
+  // We have that
+  // y = X cc - X^2 A^T v
+  // So z = X^{-1} y = cc - X A^T v
+
+  // First compute A^T v
+  dense_vector_t<i_t, f_t> A_T_v(n);
+  matrix_transpose_vector_multiply(lp.A, 1.0, v, 0.0, A_T_v);
+  // Scale A^T v by X
+  dense_vector_t<i_t, f_t> tmp(n);
+  x.pairwise_product(A_T_v, tmp);
+
+  // cc <- -1 * tmp + cc
+  cc.axpy(-1.0, tmp, 1.0);
+
+  // perturbation <- cc
+  std::copy(cc.begin(), cc.end(), perturbation.begin());
+
+  dense_vector_t<i_t, f_t> y(n);
+  cc.pairwise_product(x, y);
+
+  // Verify that A*y == 0
+  dense_vector_t<i_t, f_t> A_y(m);
+  matrix_vector_multiply(lp.A, 1.0, y, 0.0, A_y);
+  settings.log.printf("||A*y|| = %e\n", vector_norm2<i_t, f_t>(A_y));
+}
+
 template <typename i_t, typename f_t>
 lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
   const barrier_solver_settings_t<i_t, f_t>& options,
@@ -3241,7 +3339,8 @@ lp_status_t barrier_solver_t<i_t, f_t>::check_for_suboptimal_solution(
 template <typename i_t, typename f_t>
 lp_status_t barrier_solver_t<i_t, f_t>::solve(f_t start_time,
                                               const barrier_solver_settings_t<i_t, f_t>& options,
-                                              lp_solution_t<i_t, f_t>& solution)
+                                              lp_solution_t<i_t, f_t>& solution,
+                                              std::vector<f_t>& perturbation)
 {
   raft::common::nvtx::range fun_scope("Barrier: solve");
 
@@ -3556,6 +3655,7 @@ lp_status_t barrier_solver_t<i_t, f_t>::solve(f_t start_time,
                        dual_residual_norm,
                        data.cusparse_view_,
                        solution);
+      compute_perturbation(data.x, data, perturbation);
       return lp_status_t::OPTIMAL;
     }
   }

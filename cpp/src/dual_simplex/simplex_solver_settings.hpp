@@ -72,6 +72,7 @@ struct simplex_solver_settings_t {
       ordering(-1),
       barrier_dual_initial_point(-1),
       crossover(false),
+      perturbation_crossover(-1),
       refactor_frequency(100),
       iteration_log_frequency(1000),
       first_iteration_log(2),
@@ -134,6 +135,7 @@ struct simplex_solver_settings_t {
   i_t ordering;   // -1 automatic, 0 to use nested dissection, 1 to use AMD
   i_t barrier_dual_initial_point;  // -1 automatic, 0 to use Lustig, Marsten, and Shanno initial
                                    // point, 1 to use initial point form dual least squares problem
+  i_t perturbation_crossover;      // -1 automatic, 0 to not use perturbation crossover, 1 to use perturbation crossover
   bool crossover;                  // true to do crossover, false to not
   i_t refactor_frequency;          // number of basis updates before refactorization
   i_t iteration_log_frequency;     // number of iterations between log updates

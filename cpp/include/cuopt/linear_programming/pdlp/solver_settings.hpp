@@ -208,6 +208,7 @@ class pdlp_solver_settings_t {
   std::string sol_file{""};
   std::string user_problem_file{""};
   bool per_constraint_residual{false};
+  i_t perturbation_crossover{-1};
   bool crossover{false};
   bool cudss_deterministic{false};
   i_t folding{-1};

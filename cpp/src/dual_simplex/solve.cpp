@@ -280,8 +280,9 @@ lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& us
   lp_solution_t<i_t, f_t> barrier_solution(barrier_lp.num_rows, barrier_lp.num_cols);
   barrier_solver_t<i_t, f_t> barrier_solver(barrier_lp, presolve_info, barrier_settings);
   barrier_solver_settings_t<i_t, f_t> barrier_solver_settings;
+  std::vector<f_t> perturbation(barrier_lp.num_cols);
   lp_status_t barrier_status =
-    barrier_solver.solve(start_time, barrier_solver_settings, barrier_solution);
+    barrier_solver.solve(start_time, barrier_solver_settings, barrier_solution, perturbation);
   if (barrier_status == lp_status_t::OPTIMAL) {
 #ifdef COMPUTE_SCALED_RESIDUALS
     std::vector<f_t> scaled_residual = barrier_lp.rhs;
@@ -487,6 +488,112 @@ lp_status_t solve_linear_program_with_barrier(const user_problem_t<i_t, f_t>& us
       f_t primal_residual = vector_norm_inf<i_t, f_t>(rhs);
       settings.log.printf("Primal residual before adding artificial variables: %e\n", primal_residual);
     }
+
+     // Look at the dimension of the optimal face
+     if (settings.perturbation_crossover == 1)
+     {
+       std::vector<i_t> primal_partition(original_lp.num_cols, 0);
+       std::vector<i_t> dual_partition(original_lp.num_cols, 0);
+       f_t gamma = 1e-3;
+       settings.log.printf("Gamma: %e\n", gamma);
+       i_t primal_partition_count = 0;
+       for (i_t j = 0; j < original_lp.num_cols; j++) {
+         if (lp_solution.x[j] >= gamma * lp_solution.z[j]) {
+           primal_partition[j] = 1;
+           primal_partition_count++;
+         }
+       }
+       i_t dual_partition_count = 0;
+       for (i_t j = 0; j < original_lp.num_cols; j++) {
+         if (lp_solution.z[j] >= gamma * lp_solution.x[j]) {
+           dual_partition[j] = 1;
+           dual_partition_count++;
+         }
+       }
+
+       settings.log.printf("n %d Primal partition count: %d Dual partition count: %d\n", original_lp.num_cols, primal_partition_count, dual_partition_count);
+
+       std::vector<i_t> primal_variables_to_remove;
+       primal_variables_to_remove.reserve(original_lp.num_cols - primal_partition_count);
+       for (i_t j = 0; j < original_lp.num_cols; j++) {
+         if (primal_partition[j] == 0) {
+           primal_variables_to_remove.push_back(j);
+         }
+       }
+
+       settings.log.printf("Primal variables to remove: %ld\n", primal_variables_to_remove.size());
+       lp_problem_t<i_t, f_t> restricted_primal_problem = original_lp;
+       // Fix variables to zero
+       i_t fixed_variables = 0;
+       for (i_t j : primal_variables_to_remove) {
+         restricted_primal_problem.upper[j] = 0.0;
+         if (restricted_primal_problem.lower[j] != 0.0) {
+           settings.log.printf("Primal variable %d with nonzero lower bound %e\n", j, restricted_primal_problem.lower[j]);
+         }
+         fixed_variables++;
+       }
+       settings.log.printf("Number of fixings: %d\n", fixed_variables);
+
+       remove_fixed_variables(1e-12, restricted_primal_problem, fixed_variables);
+       settings.log.printf("Remaining fixed variables: %d\n", fixed_variables);
+       settings.log.printf("Number of remaining variables: %d\n", restricted_primal_problem.num_cols);
+
+       i_t rand_vector_length = restricted_primal_problem.num_cols;
+       settings.log.printf("Rand vector length: %d\n", rand_vector_length);
+
+       std::vector<f_t> random_vector(rand_vector_length);
+       for (i_t j = 0; j < rand_vector_length; j++) {
+         random_vector[j] = 0.9 + 0.1 * std::rand();
+       }
+       f_t norm_random_vector = vector_norm2<i_t, f_t>(random_vector);
+       f_t norm_perturbation = vector_norm2<i_t, f_t>(perturbation);
+       settings.log.printf("Norm random vector: %e Norm perturbation: %e\n", norm_random_vector, norm_perturbation);
+
+       // Generate a perturbation
+       f_t sum_perturb = 0.0;
+       for (i_t j = 0; j < restricted_primal_problem.num_cols; j++) {
+         f_t perturb = (random_vector[j] / norm_random_vector) * (norm_perturbation / (0.01 * restricted_primal_problem.num_cols + std::max(1e-6, lp_solution.x[j])));
+         restricted_primal_problem.objective[j] += perturb;
+         sum_perturb += std::abs(perturb);
+       }
+       settings.log.printf("Sum perturbation: %e\n", sum_perturb);
+
+
+       presolve_info_t<i_t, f_t> restricted_presolve_info;
+       lp_solution_t<i_t, f_t> restricted_solution(restricted_primal_problem.num_rows, restricted_primal_problem.num_cols);
+       simplex_solver_settings_t<i_t, f_t> restricted_solver_settings = barrier_settings;
+       restricted_solver_settings.iteration_limit = 100;
+       barrier_solver_t<i_t, f_t> restricted_solver(restricted_primal_problem, restricted_presolve_info, restricted_solver_settings);
+       std::vector<f_t> ignored_perturbation;
+       lp_status_t restricted_status =
+       restricted_solver.solve(start_time, barrier_solver_settings, restricted_solution, ignored_perturbation);
+       settings.log.printf("Restricted status: %d\n", restricted_status);
+       settings.log.printf("Restricted objective: %e\n", restricted_solution.objective);
+
+       // Check to see if it is a basic solution
+       i_t num_basic = 0;
+       for (i_t j = 0; j < restricted_primal_problem.num_cols; j++) {
+         if (restricted_solution.x[j] >= gamma * restricted_solution.z[j]) {
+           num_basic++;
+         }
+       }
+       settings.log.printf("Number of basic variables: %d m %d\n", num_basic, restricted_primal_problem.num_rows);
+
+       i_t k = 0;
+       f_t sum_diff = 0.0;
+       for (i_t j = 0; j < original_lp.num_cols; j++) {
+         if (primal_partition[j] == 1) {
+           sum_diff += std::abs(lp_solution.x[j] - restricted_solution.x[k]);
+           lp_solution.x[j] = restricted_solution.x[k];
+           k++;
+         } else {
+           sum_diff += std::abs(lp_solution.x[j]);
+           lp_solution.x[j] = 0.0;
+         }
+       }
+       settings.log.printf("Modified solution by %e\n", sum_diff);
+     }
+
     // Check to see if we need to add artifical variables
     std::vector<i_t> artificial_variables;
     artificial_variables.reserve(original_lp.num_rows);

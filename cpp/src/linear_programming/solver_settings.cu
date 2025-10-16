@@ -44,6 +44,7 @@ pdlp_solver_settings_t<i_t, f_t>::pdlp_solver_settings_t(const pdlp_solver_setti
     log_file(other.log_file),
     sol_file(other.sol_file),
     per_constraint_residual(other.per_constraint_residual),
+    perturbation_crossover(other.perturbation_crossover),
     crossover(other.crossover),
     folding(other.folding),
     augmented(other.augmented),

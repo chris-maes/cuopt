@@ -432,6 +432,39 @@ i_t remove_empty_rows(lp_problem_t<i_t, f_t>& problem,
 }
 
 template <typename i_t, typename f_t>
+i_t remove_fixed_variables(const std::vector<i_t>& col_marker,
+                           lp_problem_t<i_t, f_t>& problem,
+                           i_t& fixed_variables)
+{
+  constexpr bool verbose = false;
+  problem.A.remove_columns(col_marker);
+
+  // Clean up objective, lower, upper, and col_names
+  i_t new_cols = problem.A.n;
+  if (verbose) { printf("new cols %d\n", new_cols); }
+  std::vector<f_t> objective(new_cols);
+  std::vector<f_t> lower(new_cols);
+  std::vector<f_t> upper(new_cols);
+  i_t new_j = 0;
+  for (i_t j = 0; j < problem.num_cols; ++j) {
+    if (!col_marker[j]) {
+      objective[new_j] = problem.objective[j];
+      lower[new_j]     = problem.lower[j];
+      upper[new_j]     = problem.upper[j];
+      new_j++;
+    } else {
+      fixed_variables--;
+    }
+  }
+  problem.objective = objective;
+  problem.lower     = lower;
+  problem.upper     = upper;
+  problem.num_cols  = problem.A.n;
+  return 0;
+}
+
+
+template <typename i_t, typename f_t>
 i_t remove_fixed_variables(f_t fixed_tolerance,
                            lp_problem_t<i_t, f_t>& problem,
                            i_t& fixed_variables)
@@ -465,28 +498,8 @@ i_t remove_fixed_variables(f_t fixed_tolerance,
     }
   }
 
-  problem.A.remove_columns(col_marker);
+  remove_fixed_variables(col_marker, problem, fixed_variables);
 
-  // Clean up objective, lower, upper, and col_names
-  i_t new_cols = problem.A.n;
-  if (verbose) { printf("new cols %d\n", new_cols); }
-  std::vector<f_t> objective(new_cols);
-  std::vector<f_t> lower(new_cols);
-  std::vector<f_t> upper(new_cols);
-  i_t new_j = 0;
-  for (i_t j = 0; j < problem.num_cols; ++j) {
-    if (!col_marker[j]) {
-      objective[new_j] = problem.objective[j];
-      lower[new_j]     = problem.lower[j];
-      upper[new_j]     = problem.upper[j];
-      new_j++;
-      fixed_variables--;
-    }
-  }
-  problem.objective = objective;
-  problem.lower     = lower;
-  problem.upper     = upper;
-  problem.num_cols  = problem.A.n;
   if (verbose) { printf("Finishing fixed columns\n"); }
   return 0;
 }
@@ -1609,6 +1622,10 @@ template bool bound_strengthening<int, double>(
   const csc_matrix_t<int, double>& Arow,
   const std::vector<variable_type_t>& var_types,
   const std::vector<bool>& bounds_changed);
+
+template int remove_fixed_variables<int, double>(double fixed_tolerance,
+                                                 lp_problem_t<int, double>& problem,
+                                                 int& fixed_variables);
 #endif
 
 }  // namespace cuopt::linear_programming::dual_simplex

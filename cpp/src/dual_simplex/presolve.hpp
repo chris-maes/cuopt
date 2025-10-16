@@ -197,4 +197,9 @@ bool bound_strengthening(const std::vector<char>& row_sense,
                          const std::vector<variable_type_t>& var_types = {},
                          const std::vector<bool>& bounds_changed       = {});
 
+template <typename i_t, typename f_t>
+i_t remove_fixed_variables(f_t fixed_tolerance,
+                           lp_problem_t<i_t, f_t>& problem,
+                           i_t& fixed_variables);
+
 }  // namespace cuopt::linear_programming::dual_simplex

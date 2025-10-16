@@ -50,6 +50,7 @@
 #define CUOPT_LOG_FILE                    "log_file"
 #define CUOPT_LOG_TO_CONSOLE              "log_to_console"
 #define CUOPT_CROSSOVER                   "crossover"
+#define CUOPT_PERTURBATION_CROSSOVER      "perturbation_crossover"
 #define CUOPT_FOLDING                     "folding"
 #define CUOPT_AUGMENTED                   "augmented"
 #define CUOPT_DUALIZE                     "dualize"
