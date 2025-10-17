@@ -34,7 +34,7 @@ i_t preconditioned_conjugate_gradient(const T& op,
                                       f_t tolerance,
                                       dense_vector_t<i_t, f_t>& xinout)
 {
-  const bool show_pcg_info          = false;
+  const bool show_pcg_info          = true;
   dense_vector_t<i_t, f_t> residual = b;
   dense_vector_t<i_t, f_t> y(b.size());
 

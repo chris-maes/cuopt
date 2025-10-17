@@ -3173,20 +3173,34 @@ void barrier_solver_t<i_t, f_t>::compute_perturbation(const dense_vector_t<i_t, 
   dense_vector_t<i_t, f_t> cc(n);
   data.c.pairwise_product(x, cc);
 
-
+  // We want to compute the projection of cc = Xc onto X^{-1} L
+  // where L is the nullspace of A
+  //
   // We want to solve the problem
-  // minimize     || z - cc ||_2^2
+  // minimize     1/2 || z - cc ||_2^2
   // subject to    z = X^{-1} * y
   //               A*y = 0
-  // The solution is given by
+  //
+  // The objective is given by
+  // 1/2 (z - cc)^T (z - cc) = 1/2 z^T z - z^T cc + 1/2 cc^T cc
+  // = 1/2 y^T X^{-2} y - y^T X^{-1} cc + 1/2 cc^T cc
+  // The gradient of the objective is given by
+  // grad = X^{-2} y - X^{-1} cc
+  //
+  // So the KKT system is given by
   // X^{-2} y - X^{-1} * cc + A^T v = 0
   // A y                           = 0
 
+  // Thus we have that
+  // X^{-2} y = -A^T v + X^{-1} cc
+  // y = -X^2 A^T v + X cc
+  // A y = -A X^2 A^T v + A X cc = 0
+
   // We first solve for v via
-  // A X^{-2} A^T v = A X^{-1} cc
+  // A X^2 A^T v = A X cc
   for (i_t j = 0; j < n; j++) {
     f_t x_sq = x[j] * x[j];
-    data.diag[j] = 1.0 / x_sq;
+    data.diag[j] =  1.0 / x_sq;
     data.inv_diag[j] = x_sq;
   }
   // Copy host vector inv_diag to device
@@ -3208,9 +3222,11 @@ void barrier_solver_t<i_t, f_t>::compute_perturbation(const dense_vector_t<i_t, 
     return;
   }
 
-  // Compute the rhs = A X^{-1} cc = A X^{-1} X c = A c
+  // Compute the rhs = A X cc
   dense_vector_t<i_t, f_t> rhs(m);
-  matrix_vector_multiply(lp.A, 1.0, data.c, 0.0, rhs);
+  dense_vector_t<i_t, f_t> Xcc(n);
+  x.pairwise_product(cc, Xcc);
+  matrix_vector_multiply(lp.A, 1.0, Xcc, 0.0, rhs);
 
   settings.log.printf("try to copy rhs to device\n");
   settings.log.printf("rhs size %ld\n", rhs.size());
@@ -3220,15 +3236,58 @@ void barrier_solver_t<i_t, f_t>::compute_perturbation(const dense_vector_t<i_t, 
 
   // Solve for v (Replace with gpu_solve_adat to handle dense columns)
   data.chol->solve(data.d_h_, data.d_dy_);
-  std::vector<f_t> v(m);
+  dense_vector_t<i_t, f_t> v(m);
   settings.log.printf("try to copy v to host\n");
   raft::copy(v.data(), data.d_dy_.data(), data.d_dy_.size(), stream_view_);
   settings.log.printf("copied v to host\n");
   RAFT_CUDA_TRY(cudaStreamSynchronize(stream_view_));
 
+  {
+    raft::copy(data.d_y_residual_.data(), data.d_h_.data(), data.d_h_.size(), stream_view_);
+
+    // TMP should be done only once
+    cusparseDnVecDescr_t cusparse_dy_ = data.cusparse_view_.create_vector(data.d_dy_);
+
+    data.gpu_adat_multiply(1.0,
+                           data.d_dy_,
+                           cusparse_dy_,
+                           -1.0,
+                           data.d_y_residual_,
+                           data.cusparse_y_residual_,
+                           data.d_u_,
+                           data.cusparse_u_,
+                           data.cusparse_view_,
+                           data.d_inv_diag);
+
+    f_t y_residual_norm = device_vector_norm_inf<i_t, f_t>(data.d_y_residual_, stream_view_);
+    if (1) {
+      settings.log.printf("||A X^2 AT*v - h||_inf = %.2e || h ||_inf = %.2e\n",
+                          y_residual_norm,
+                          device_vector_norm_inf<i_t, f_t>(data.d_h_, stream_view_));
+    }
+    if (y_residual_norm > 1e-6) {
+      struct op_t {
+        iteration_data_t<i_t, f_t>& self;
+        op_t(iteration_data_t<i_t, f_t>& s) : self(s) {}
+        void a_multiply(f_t alpha,
+                        const dense_vector_t<i_t, f_t>& x,
+                        f_t beta,
+                        dense_vector_t<i_t, f_t>& y) const
+        {
+          self.adat_multiply(alpha, x, beta, y);
+        }
+        void m_solve(const dense_vector_t<i_t, f_t>& b, dense_vector_t<i_t, f_t>& x) const
+        {
+          self.chol->solve(b, x);
+        }
+      } op(data);
+      preconditioned_conjugate_gradient(op, settings, rhs, 1e-9, v);
+    }
+  }
+
 
   // We have that
-  // y = X cc - X^2 A^T v
+  // y = -X^2 A^T v + X cc
   // So z = X^{-1} y = cc - X A^T v
 
   // First compute A^T v
@@ -3238,19 +3297,32 @@ void barrier_solver_t<i_t, f_t>::compute_perturbation(const dense_vector_t<i_t, 
   dense_vector_t<i_t, f_t> tmp(n);
   x.pairwise_product(A_T_v, tmp);
 
-  // cc <- -1 * tmp + cc
+  dense_vector_t<i_t, f_t> X2_AT_v(n);
+  x.pairwise_product(tmp, X2_AT_v);
+  dense_vector_t<i_t, f_t> residual = rhs;
+  matrix_vector_multiply(lp.A, 1.0, X2_AT_v, -1.0, residual);
+  settings.log.printf("||A X^2 AT*v - rhs|| = %.2e  || rhs ||_inf = %.2e\n", vector_norm2<i_t, f_t>(residual), vector_norm_inf<i_t, f_t>(rhs));
+
+  // cc <- -1 * tmp + cc = -1 X A^T v + cc
   cc.axpy(-1.0, tmp, 1.0);
 
   // perturbation <- cc
   std::copy(cc.begin(), cc.end(), perturbation.begin());
 
   dense_vector_t<i_t, f_t> y(n);
-  cc.pairwise_product(x, y);
+  // y = X z
+  x.pairwise_product(perturbation, y);
 
   // Verify that A*y == 0
   dense_vector_t<i_t, f_t> A_y(m);
   matrix_vector_multiply(lp.A, 1.0, y, 0.0, A_y);
-  settings.log.printf("||A*y|| = %e\n", vector_norm2<i_t, f_t>(A_y));
+  f_t A_y_norm = vector_norm2<i_t, f_t>(A_y);
+  settings.log.printf("||A*y|| = %e\n", A_y_norm);
+  if (A_y_norm > 1e-3) {
+    settings.log.printf("A*y is not zero\n");
+    std::fill(perturbation.begin(), perturbation.end(), 0.0);
+  }
+
 }
 
 template <typename i_t, typename f_t>
