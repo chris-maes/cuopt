@@ -490,15 +490,6 @@ class SolverConfig(StrictModel):
         description="Minimum orthogonality for cut selection. "
         "Value between 0.0 and 1.0.",
     )
-    mip_node_limit: Optional[int] = Field(
-        default=None,
-        description="Maximum number of nodes to explore in branch and bound.",
-    )
-    mip_reliability_branching: Optional[int] = Field(
-        default=None,
-        description="Number of times to use strong branching before relying on pseudocosts. "
-        "Set to -1 for automatic.",
-    )
     num_cpu_threads: Optional[int] = Field(
         default=None,
         description="Set the number of CPU threads to use for branch and bound.",  # noqa
