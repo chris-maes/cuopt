@@ -31,6 +31,16 @@ from cuopt.linear_programming.solver.solver_parameters import (
     CUOPT_FOLDING,
     CUOPT_INFEASIBILITY_DETECTION,
     CUOPT_METHOD,
+    CUOPT_MIP_CUT_CHANGE_THRESHOLD,
+    CUOPT_MIP_CUT_MIN_ORTHOGONALITY,
+    CUOPT_MIP_CUT_PASSES,
+    CUOPT_MIP_KNAPSACK_CUTS,
+    CUOPT_MIP_MIXED_INTEGER_GOMORY_CUTS,
+    CUOPT_MIP_MIXED_INTEGER_ROUNDING_CUTS,
+    CUOPT_MIP_NODE_LIMIT,
+    CUOPT_MIP_REDUCED_COST_STRENGTHENING,
+    CUOPT_MIP_RELIABILITY_BRANCHING,
+    CUOPT_MIP_STRONG_CHVATAL_GOMORY_CUTS,
     CUOPT_ORDERING,
     CUOPT_PDLP_SOLVER_MODE,
 )
@@ -928,3 +938,182 @@ def test_quadratic_matrix_2():
     assert x2.getValue() == pytest.approx(0.0000000, abs=1e-3)
     assert x3.getValue() == pytest.approx(0.1092896, abs=1e-3)
     assert problem.ObjValue == pytest.approx(3.715847, abs=1e-3)
+
+
+@pytest.mark.parametrize(
+    "test_name,settings_config",
+    [
+        (
+            "cuts_disabled",
+            {
+                CUOPT_MIP_CUT_PASSES: 0,
+            },
+        ),
+        (
+            "cuts_enabled",
+            {
+                CUOPT_MIP_CUT_PASSES: 5,
+            },
+        ),
+        (
+            "gomory_cuts_only",
+            {
+                CUOPT_MIP_CUT_PASSES: 5,
+                CUOPT_MIP_MIXED_INTEGER_GOMORY_CUTS: 1,
+                CUOPT_MIP_MIXED_INTEGER_ROUNDING_CUTS: 0,
+                CUOPT_MIP_KNAPSACK_CUTS: 0,
+                CUOPT_MIP_STRONG_CHVATAL_GOMORY_CUTS: 0,
+            },
+        ),
+        (
+            "mir_cuts_only",
+            {
+                CUOPT_MIP_CUT_PASSES: 5,
+                CUOPT_MIP_MIXED_INTEGER_GOMORY_CUTS: 0,
+                CUOPT_MIP_MIXED_INTEGER_ROUNDING_CUTS: 1,
+                CUOPT_MIP_KNAPSACK_CUTS: 0,
+                CUOPT_MIP_STRONG_CHVATAL_GOMORY_CUTS: 0,
+            },
+        ),
+        (
+            "knapsack_cuts_only",
+            {
+                CUOPT_MIP_CUT_PASSES: 5,
+                CUOPT_MIP_MIXED_INTEGER_GOMORY_CUTS: 0,
+                CUOPT_MIP_MIXED_INTEGER_ROUNDING_CUTS: 0,
+                CUOPT_MIP_KNAPSACK_CUTS: 1,
+                CUOPT_MIP_STRONG_CHVATAL_GOMORY_CUTS: 0,
+            },
+        ),
+        (
+            "strong_cg_cuts_only",
+            {
+                CUOPT_MIP_CUT_PASSES: 5,
+                CUOPT_MIP_MIXED_INTEGER_GOMORY_CUTS: 0,
+                CUOPT_MIP_MIXED_INTEGER_ROUNDING_CUTS: 0,
+                CUOPT_MIP_KNAPSACK_CUTS: 0,
+                CUOPT_MIP_STRONG_CHVATAL_GOMORY_CUTS: 1,
+            },
+        ),
+        (
+            "all_cuts_enabled",
+            {
+                CUOPT_MIP_CUT_PASSES: 5,
+                CUOPT_MIP_MIXED_INTEGER_GOMORY_CUTS: 1,
+                CUOPT_MIP_MIXED_INTEGER_ROUNDING_CUTS: 1,
+                CUOPT_MIP_KNAPSACK_CUTS: 1,
+                CUOPT_MIP_STRONG_CHVATAL_GOMORY_CUTS: 1,
+            },
+        ),
+        (
+            "all_cuts_automatic",
+            {
+                CUOPT_MIP_CUT_PASSES: 5,
+                CUOPT_MIP_MIXED_INTEGER_GOMORY_CUTS: -1,
+                CUOPT_MIP_MIXED_INTEGER_ROUNDING_CUTS: -1,
+                CUOPT_MIP_KNAPSACK_CUTS: -1,
+                CUOPT_MIP_STRONG_CHVATAL_GOMORY_CUTS: -1,
+            },
+        ),
+        (
+            "cut_thresholds",
+            {
+                CUOPT_MIP_CUT_PASSES: 5,
+                CUOPT_MIP_CUT_CHANGE_THRESHOLD: 1e-4,
+                CUOPT_MIP_CUT_MIN_ORTHOGONALITY: 0.3,
+            },
+        ),
+        (
+            "node_limit",
+            {
+                CUOPT_MIP_NODE_LIMIT: 100,
+            },
+        ),
+        (
+            "reliability_branching",
+            {
+                CUOPT_MIP_RELIABILITY_BRANCHING: 5,
+            },
+        ),
+        (
+            "reduced_cost_strengthening",
+            {
+                CUOPT_MIP_REDUCED_COST_STRENGTHENING: 1,
+            },
+        ),
+        (
+            "combo_cuts_and_branching",
+            {
+                CUOPT_MIP_CUT_PASSES: 3,
+                CUOPT_MIP_MIXED_INTEGER_GOMORY_CUTS: 1,
+                CUOPT_MIP_RELIABILITY_BRANCHING: 3,
+                CUOPT_MIP_REDUCED_COST_STRENGTHENING: 1,
+            },
+        ),
+    ],
+)
+def test_mip_cut_settings(test_name, settings_config):
+    """
+    Parameterized test for MIP cut settings.
+
+    Tests the MIP solver with various cutting plane configurations to ensure
+    correctness across different settings.
+
+    Problem:
+        maximize   5*x + 3*y
+        subject to 2*x + 4*y >= 230
+                   3*x + 2*y <= 190
+                   x, y >= 0 and integer
+
+    Expected Solution:
+        Optimal objective: 353
+        x = 36, y = 41
+
+    Args
+    ----
+        test_name: Descriptive name for the test configuration
+        settings_config: Dictionary of MIP cut parameters to set
+    """
+    prob = Problem(f"MIP Cut Test - {test_name}")
+
+    # Add integer variables
+    x = prob.addVariable(lb=0, vtype=VType.INTEGER, name="x")
+    y = prob.addVariable(lb=0, vtype=VType.INTEGER, name="y")
+
+    # Add constraints
+    prob.addConstraint(2 * x + 4 * y >= 230, name="c1")
+    prob.addConstraint(3 * x + 2 * y <= 190, name="c2")
+
+    # Set objective: maximize 5*x + 3*y
+    prob.setObjective(5 * x + 3 * y, sense=MAXIMIZE)
+
+    # Configure solver settings
+    settings = SolverSettings()
+    settings.set_parameter("time_limit", 30)
+
+    # Apply test-specific settings
+    for param_name, param_value in settings_config.items():
+        settings.set_parameter(param_name, param_value)
+
+    print(f"\nTesting MIP cut configuration: {test_name}")
+    print(f"Settings: {settings_config}")
+
+    # Solve the problem
+    prob.solve(settings)
+
+    print(f"Status: {prob.Status.name}")
+    print(f"Objective: {prob.ObjValue}")
+    print(f"x = {x.Value}, y = {y.Value}")
+
+    # Verify solution
+    assert prob.solved, f"Problem not solved for {test_name}"
+    assert prob.Status.name == "Optimal", f"Not optimal for {test_name}"
+    assert prob.ObjValue == pytest.approx(353, rel=0.01), (
+        f"Incorrect objective for {test_name}"
+    )
+    assert x.Value == pytest.approx(36, rel=0.01), (
+        f"Incorrect x value for {test_name}"
+    )
+    assert y.Value == pytest.approx(41, rel=0.01), (
+        f"Incorrect y value for {test_name}"
+    )

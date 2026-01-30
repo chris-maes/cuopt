@@ -24,11 +24,21 @@ from cuopt.linear_programming.solver.solver_parameters import (
     CUOPT_METHOD,
     CUOPT_MIP_ABSOLUTE_GAP,
     CUOPT_MIP_ABSOLUTE_TOLERANCE,
+    CUOPT_MIP_CUT_CHANGE_THRESHOLD,
+    CUOPT_MIP_CUT_MIN_ORTHOGONALITY,
+    CUOPT_MIP_CUT_PASSES,
     CUOPT_MIP_HEURISTICS_ONLY,
     CUOPT_MIP_INTEGRALITY_TOLERANCE,
+    CUOPT_MIP_KNAPSACK_CUTS,
+    CUOPT_MIP_MIXED_INTEGER_GOMORY_CUTS,
+    CUOPT_MIP_MIXED_INTEGER_ROUNDING_CUTS,
+    CUOPT_MIP_NODE_LIMIT,
+    CUOPT_MIP_REDUCED_COST_STRENGTHENING,
     CUOPT_MIP_RELATIVE_GAP,
     CUOPT_MIP_RELATIVE_TOLERANCE,
+    CUOPT_MIP_RELIABILITY_BRANCHING,
     CUOPT_MIP_SCALING,
+    CUOPT_MIP_STRONG_CHVATAL_GOMORY_CUTS,
     CUOPT_NUM_CPU_THREADS,
     CUOPT_NUM_GPUS,
     CUOPT_ORDERING,
@@ -373,6 +383,30 @@ class SolverSettings:
             "mip_scaling": self.get_parameter(CUOPT_MIP_SCALING),
             "mip_heuristics_only": self.get_parameter(
                 CUOPT_MIP_HEURISTICS_ONLY
+            ),
+            "mip_cut_passes": self.get_parameter(CUOPT_MIP_CUT_PASSES),
+            "mip_mixed_integer_rounding_cuts": self.get_parameter(
+                CUOPT_MIP_MIXED_INTEGER_ROUNDING_CUTS
+            ),
+            "mip_mixed_integer_gomory_cuts": self.get_parameter(
+                CUOPT_MIP_MIXED_INTEGER_GOMORY_CUTS
+            ),
+            "mip_knapsack_cuts": self.get_parameter(CUOPT_MIP_KNAPSACK_CUTS),
+            "mip_strong_chvatal_gomory_cuts": self.get_parameter(
+                CUOPT_MIP_STRONG_CHVATAL_GOMORY_CUTS
+            ),
+            "mip_reduced_cost_strengthening": self.get_parameter(
+                CUOPT_MIP_REDUCED_COST_STRENGTHENING
+            ),
+            "mip_cut_change_threshold": self.get_parameter(
+                CUOPT_MIP_CUT_CHANGE_THRESHOLD
+            ),
+            "mip_cut_min_orthogonality": self.get_parameter(
+                CUOPT_MIP_CUT_MIN_ORTHOGONALITY
+            ),
+            "mip_node_limit": self.get_parameter(CUOPT_MIP_NODE_LIMIT),
+            "mip_reliability_branching": self.get_parameter(
+                CUOPT_MIP_RELIABILITY_BRANCHING
             ),
             "num_cpu_threads": self.get_parameter(CUOPT_NUM_CPU_THREADS),
             "num_gpus": self.get_parameter(CUOPT_NUM_GPUS),

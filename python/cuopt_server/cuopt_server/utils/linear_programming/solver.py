@@ -30,11 +30,21 @@ from cuopt.linear_programming.solver.solver_parameters import (
     CUOPT_METHOD,
     CUOPT_MIP_ABSOLUTE_GAP,
     CUOPT_MIP_ABSOLUTE_TOLERANCE,
+    CUOPT_MIP_CUT_CHANGE_THRESHOLD,
+    CUOPT_MIP_CUT_MIN_ORTHOGONALITY,
+    CUOPT_MIP_CUT_PASSES,
     CUOPT_MIP_HEURISTICS_ONLY,
     CUOPT_MIP_INTEGRALITY_TOLERANCE,
+    CUOPT_MIP_KNAPSACK_CUTS,
+    CUOPT_MIP_MIXED_INTEGER_GOMORY_CUTS,
+    CUOPT_MIP_MIXED_INTEGER_ROUNDING_CUTS,
+    CUOPT_MIP_NODE_LIMIT,
+    CUOPT_MIP_REDUCED_COST_STRENGTHENING,
     CUOPT_MIP_RELATIVE_GAP,
     CUOPT_MIP_RELATIVE_TOLERANCE,
+    CUOPT_MIP_RELIABILITY_BRANCHING,
     CUOPT_MIP_SCALING,
+    CUOPT_MIP_STRONG_CHVATAL_GOMORY_CUTS,
     CUOPT_NUM_CPU_THREADS,
     CUOPT_NUM_GPUS,
     CUOPT_ORDERING,
@@ -387,6 +397,53 @@ def create_solver(LP_data, warmstart_data):
         if solver_config.cudss_deterministic is not None:
             solver_settings.set_parameter(
                 CUOPT_CUDSS_DETERMINISTIC, solver_config.cudss_deterministic
+            )
+        if solver_config.mip_cut_passes is not None:
+            solver_settings.set_parameter(
+                CUOPT_MIP_CUT_PASSES, solver_config.mip_cut_passes
+            )
+        if solver_config.mip_mixed_integer_rounding_cuts is not None:
+            solver_settings.set_parameter(
+                CUOPT_MIP_MIXED_INTEGER_ROUNDING_CUTS,
+                solver_config.mip_mixed_integer_rounding_cuts,
+            )
+        if solver_config.mip_mixed_integer_gomory_cuts is not None:
+            solver_settings.set_parameter(
+                CUOPT_MIP_MIXED_INTEGER_GOMORY_CUTS,
+                solver_config.mip_mixed_integer_gomory_cuts,
+            )
+        if solver_config.mip_knapsack_cuts is not None:
+            solver_settings.set_parameter(
+                CUOPT_MIP_KNAPSACK_CUTS, solver_config.mip_knapsack_cuts
+            )
+        if solver_config.mip_strong_chvatal_gomory_cuts is not None:
+            solver_settings.set_parameter(
+                CUOPT_MIP_STRONG_CHVATAL_GOMORY_CUTS,
+                solver_config.mip_strong_chvatal_gomory_cuts,
+            )
+        if solver_config.mip_reduced_cost_strengthening is not None:
+            solver_settings.set_parameter(
+                CUOPT_MIP_REDUCED_COST_STRENGTHENING,
+                solver_config.mip_reduced_cost_strengthening,
+            )
+        if solver_config.mip_cut_change_threshold is not None:
+            solver_settings.set_parameter(
+                CUOPT_MIP_CUT_CHANGE_THRESHOLD,
+                solver_config.mip_cut_change_threshold,
+            )
+        if solver_config.mip_cut_min_orthogonality is not None:
+            solver_settings.set_parameter(
+                CUOPT_MIP_CUT_MIN_ORTHOGONALITY,
+                solver_config.mip_cut_min_orthogonality,
+            )
+        if solver_config.mip_node_limit is not None:
+            solver_settings.set_parameter(
+                CUOPT_MIP_NODE_LIMIT, solver_config.mip_node_limit
+            )
+        if solver_config.mip_reliability_branching is not None:
+            solver_settings.set_parameter(
+                CUOPT_MIP_RELIABILITY_BRANCHING,
+                solver_config.mip_reliability_branching,
             )
         if solver_config.solution_file != "":
             warnings.append(ignored_warning("solution_file"))
