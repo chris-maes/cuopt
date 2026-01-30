@@ -24,6 +24,7 @@ from cuopt.linear_programming.solver.solver_parameters import (
     CUOPT_METHOD,
     CUOPT_MIP_ABSOLUTE_GAP,
     CUOPT_MIP_ABSOLUTE_TOLERANCE,
+    CUOPT_MIP_BATCH_PDLP_STRONG_BRANCHING,
     CUOPT_MIP_CUT_CHANGE_THRESHOLD,
     CUOPT_MIP_CUT_MIN_ORTHOGONALITY,
     CUOPT_MIP_CUT_PASSES,
@@ -401,6 +402,9 @@ class SolverSettings:
             ),
             "mip_cut_min_orthogonality": self.get_parameter(
                 CUOPT_MIP_CUT_MIN_ORTHOGONALITY
+            ),
+            "mip_batch_pdlp_strong_branching": self.get_parameter(
+                CUOPT_MIP_BATCH_PDLP_STRONG_BRANCHING
             ),
             "num_cpu_threads": self.get_parameter(CUOPT_NUM_CPU_THREADS),
             "num_gpus": self.get_parameter(CUOPT_NUM_GPUS),

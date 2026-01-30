@@ -490,6 +490,11 @@ class SolverConfig(StrictModel):
         description="Minimum orthogonality for cut selection. "
         "Value between 0.0 and 1.0.",
     )
+    mip_batch_pdlp_strong_branching: Optional[int] = Field(
+        default=None,
+        description="Number of candidates to evaluate in parallel using PDLP "
+        "during strong branching. Set to 0 to disable.",
+    )
     num_cpu_threads: Optional[int] = Field(
         default=None,
         description="Set the number of CPU threads to use for branch and bound.",  # noqa

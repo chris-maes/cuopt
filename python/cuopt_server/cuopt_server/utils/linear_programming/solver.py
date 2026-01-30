@@ -30,6 +30,7 @@ from cuopt.linear_programming.solver.solver_parameters import (
     CUOPT_METHOD,
     CUOPT_MIP_ABSOLUTE_GAP,
     CUOPT_MIP_ABSOLUTE_TOLERANCE,
+    CUOPT_MIP_BATCH_PDLP_STRONG_BRANCHING,
     CUOPT_MIP_CUT_CHANGE_THRESHOLD,
     CUOPT_MIP_CUT_MIN_ORTHOGONALITY,
     CUOPT_MIP_CUT_PASSES,
@@ -433,6 +434,11 @@ def create_solver(LP_data, warmstart_data):
             solver_settings.set_parameter(
                 CUOPT_MIP_CUT_MIN_ORTHOGONALITY,
                 solver_config.mip_cut_min_orthogonality,
+            )
+        if solver_config.mip_batch_pdlp_strong_branching is not None:
+            solver_settings.set_parameter(
+                CUOPT_MIP_BATCH_PDLP_STRONG_BRANCHING,
+                solver_config.mip_batch_pdlp_strong_branching,
             )
         if solver_config.solution_file != "":
             warnings.append(ignored_warning("solution_file"))
