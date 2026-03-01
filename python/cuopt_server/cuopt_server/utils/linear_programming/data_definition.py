@@ -450,6 +450,51 @@ class SolverConfig(StrictModel):
         description="Set True to run heuristics only, False to run "
         "heuristics and branch and bound for MILP",
     )
+    mip_cut_passes: Optional[int] = Field(
+        default=None,
+        description="Number of cut passes to make at the root node. "
+        "Set to 0 to disable cuts, -1 for automatic.",
+    )
+    mip_mixed_integer_rounding_cuts: Optional[int] = Field(
+        default=None,
+        description="Enable/disable Mixed Integer Rounding (MIR) cuts. "
+        "Set to -1 for automatic, 0 to disable, 1 to enable.",
+    )
+    mip_mixed_integer_gomory_cuts: Optional[int] = Field(
+        default=None,
+        description="Enable/disable Mixed Integer Gomory cuts. "
+        "Set to -1 for automatic, 0 to disable, 1 to enable.",
+    )
+    mip_knapsack_cuts: Optional[int] = Field(
+        default=None,
+        description="Enable/disable Knapsack cuts. "
+        "Set to -1 for automatic, 0 to disable, 1 to enable.",
+    )
+    mip_strong_chvatal_gomory_cuts: Optional[int] = Field(
+        default=None,
+        description="Enable/disable Strong Chvatal-Gomory cuts. "
+        "Set to -1 for automatic, 0 to disable, 1 to enable.",
+    )
+    mip_reduced_cost_strengthening: Optional[int] = Field(
+        default=None,
+        description="Enable/disable reduced cost strengthening at the root node. "
+        "Set to -1 for automatic, 0 to disable, otherwise specifies max number of strengthening rounds.",
+    )
+    mip_cut_change_threshold: Optional[float] = Field(
+        default=None,
+        description="Threshold for cutting plane objective improvement. "
+        "Cuts are stopped if improvement falls below this threshold.",
+    )
+    mip_cut_min_orthogonality: Optional[float] = Field(
+        default=None,
+        description="Minimum orthogonality for cut selection. "
+        "Value between 0.0 and 1.0.",
+    )
+    mip_batch_pdlp_strong_branching: Optional[int] = Field(
+        default=None,
+        description="Number of candidates to evaluate in parallel using PDLP "
+        "during strong branching. Set to 0 to disable.",
+    )
     num_cpu_threads: Optional[int] = Field(
         default=None,
         description="Set the number of CPU threads to use for branch and bound.",  # noqa
