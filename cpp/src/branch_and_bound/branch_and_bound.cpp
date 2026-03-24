@@ -2248,6 +2248,35 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
 #endif
       cut_pool_size = cut_pool.pool_size();
 
+      // #region agent log
+      {
+        int n_gomory = 0, n_mir = 0, n_knapsack = 0, n_other = 0;
+        for (i_t i = 0; i < num_cuts; i++) {
+          if (cut_types[i] == cut_type_t::MIXED_INTEGER_GOMORY) n_gomory++;
+          else if (cut_types[i] == cut_type_t::MIXED_INTEGER_ROUNDING) n_mir++;
+          else if (cut_types[i] == cut_type_t::KNAPSACK) n_knapsack++;
+          else n_other++;
+        }
+        f_t max_viol = 0.0, min_viol = 1e30;
+        for (i_t i = 0; i < num_cuts; i++) {
+          f_t lhs = 0.0;
+          for (i_t k = cuts_to_add.row_start[i]; k < cuts_to_add.row_start[i + 1]; k++) {
+            lhs += cuts_to_add.values[k] * root_relax_soln_.x[cuts_to_add.col_index[k]];
+          }
+          f_t viol = lhs - cut_rhs[i];
+          if (viol > max_viol) max_viol = viol;
+          if (viol < min_viol) min_viol = viol;
+        }
+        char buf[512];
+        snprintf(buf, sizeof(buf),
+          "{\"cut_pass\":%d,\"n_gomory\":%d,\"n_mir\":%d,\"n_knapsack\":%d,\"n_other\":%d,"
+          "\"num_rows\":%d,\"max_viol\":%.6e,\"min_viol\":%.6e,\"hypothesisId\":\"H4\"}",
+          cut_pass, n_gomory, n_mir, n_knapsack, n_other,
+          original_lp_.num_rows, (double)max_viol, (double)min_viol);
+        debug_log_800e67_bb("bb.cpp:root_cuts", "cuts_selected", buf);
+      }
+      // #endregion
+
       // Resolve the LP with the new cuts
       settings_.log.debug(
         "Solving LP with %d cuts (%d cut nonzeros). Cuts in pool %d. Total constraints %d\n",
@@ -2310,6 +2339,20 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
       std::vector<f_t> new_upper = original_lp_.upper;
       bool feasible =
         node_presolve.bounds_strengthening(settings_, bounds_changed, new_lower, new_upper);
+      // #region agent log
+      {
+        int n_lower_changed = 0, n_upper_changed = 0;
+        for (i_t j = 0; j < original_lp_.num_cols; j++) {
+          if (new_lower[j] > original_lp_.lower[j] + 1e-10) n_lower_changed++;
+          if (new_upper[j] < original_lp_.upper[j] - 1e-10) n_upper_changed++;
+        }
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+          "{\"cut_pass\":%d,\"n_lower_changed\":%d,\"n_upper_changed\":%d,\"feasible\":%d,\"hypothesisId\":\"H6\"}",
+          cut_pass, n_lower_changed, n_upper_changed, (int)feasible);
+        debug_log_800e67_bb("bb.cpp:root_cuts", "bound_strengthening", buf);
+      }
+      // #endregion
       mutex_original_lp_.lock();
       original_lp_.lower = new_lower;
       original_lp_.upper = new_upper;
@@ -2348,6 +2391,9 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
       if (dual_phase2_time > 1.0) {
         settings_.log.debug("Dual phase2 time %.2f seconds\n", dual_phase2_time);
       }
+      // #region agent log
+      { char buf[256]; snprintf(buf, sizeof(buf), "{\"cut_pass\":%d,\"lp_status\":\"%s\",\"num_rows\":%d,\"num_cols\":%d,\"iters\":%d,\"hypothesisId\":\"H4\"}", cut_pass, dual::status_to_string(cut_status).c_str(), original_lp_.num_rows, original_lp_.num_cols, iter); debug_log_800e67_bb("bb.cpp:root_cuts", "lp_after_cuts", buf); }
+      // #endregion
       if (cut_status == dual::status_t::TIME_LIMIT) {
         solver_status_ = mip_status_t::TIME_LIMIT;
         set_final_solution(solution, root_objective_);
@@ -2376,12 +2422,10 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
           root_objective_ = compute_objective(original_lp_, root_relax_soln_.x);
         } else {
           // #region agent log
-          { char buf[128]; snprintf(buf, sizeof(buf), "{\"scratch_status\":\"%d\",\"hypothesisId\":\"H3\"}", (int)scratch_status); debug_log_800e67_bb("bb.cpp:root_cuts", "scratch_solve_failed", buf); }
+          { char buf[256]; snprintf(buf, sizeof(buf), "{\"scratch_status\":\"%d\",\"original_rows\":%d,\"num_rows\":%d,\"num_cols\":%d,\"hypothesisId\":\"H3\"}", (int)scratch_status, original_rows, original_lp_.num_rows, original_lp_.num_cols); debug_log_800e67_bb("bb.cpp:root_cuts", "scratch_solve_failed", buf); }
           // #endregion
           settings_.log.printf("Cut status %s\n", dual::status_to_string(cut_status).c_str());
-#ifdef WRITE_CUT_INFEASIBLE_MPS
-          original_lp_.write_mps("cut_infeasible.mps");
-#endif
+          original_lp_.write_mps("/home/cmaes/scratch/cut_infeasible.mps");
           return mip_status_t::NUMERICAL;
         }
       }
