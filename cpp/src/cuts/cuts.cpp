@@ -16,6 +16,16 @@
 #include <cstdio>
 #include <limits>
 #include <unordered_set>
+// #region agent log
+#include <fstream>
+#include <chrono>
+static void debug_log_800e67(const char* loc, const char* msg, const char* data_json) {
+  auto now = std::chrono::system_clock::now().time_since_epoch();
+  long long ts = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+  std::ofstream f("/home/cmaes/scratch/debug-800e67.log", std::ios::app);
+  if (f) { f << "{\"sessionId\":\"800e67\",\"location\":\"" << loc << "\",\"message\":\"" << msg << "\",\"data\":" << data_json << ",\"timestamp\":" << ts << "}\n"; }
+}
+// #endregion
 
 #include <barrier/dense_matrix.hpp>
 
@@ -448,7 +458,9 @@ void extend_clique_vertices(std::vector<i_t>& clique_vertices,
 template <typename i_t, typename f_t>
 bool rational_coefficients(const std::vector<variable_type_t>& var_types,
                            const inequality_t<i_t, f_t>& inequality,
-                           inequality_t<i_t, f_t>& rational_inequality);
+                           inequality_t<i_t, f_t>& rational_inequality,
+                           const std::vector<f_t>* lower_bounds = nullptr,
+                           const std::vector<f_t>* upper_bounds = nullptr);
 
 template <typename f_t>
 bool rational_approximation(f_t x,
@@ -2343,7 +2355,9 @@ void cut_generation_t<i_t, f_t>::generate_gomory_cuts(
       complemented_mir.remove_small_coefficients(lp.lower, lp.upper, cut_A_float);
 
       inequality_t<i_t, f_t> cut_A(lp.num_cols);
-      if (cut_ok) { cut_ok = rational_coefficients(var_types, cut_A_float, cut_A); }
+      if (cut_ok) {
+        cut_ok = rational_coefficients(var_types, cut_A_float, cut_A, &lp.lower, &lp.upper);
+      }
 
       // See if the inequality is violated by the original relaxation solution
       f_t cut_A_violation = complemented_mir.compute_violation(cut_A, xstar);
@@ -2380,7 +2394,9 @@ void cut_generation_t<i_t, f_t>::generate_gomory_cuts(
       complemented_mir.remove_small_coefficients(lp.lower, lp.upper, cut_B_float);
 
       inequality_t<i_t, f_t> cut_B(lp.num_cols);
-      if (cut_ok) { cut_ok = rational_coefficients(var_types, cut_B_float, cut_B); }
+      if (cut_ok) {
+        cut_ok = rational_coefficients(var_types, cut_B_float, cut_B, &lp.lower, &lp.upper);
+      }
 
       bool B_valid        = false;
       f_t cut_B_distance  = 0.0;
@@ -2402,8 +2418,14 @@ void cut_generation_t<i_t, f_t>::generate_gomory_cuts(
       }
 
       if ((cut_A_distance > cut_B_distance) && A_valid) {
+        // #region agent log
+        { char buf[256]; snprintf(buf, sizeof(buf), "{\"which\":\"A\",\"rhs\":%.10e,\"nz\":%d,\"dist\":%.6e,\"hypothesisId\":\"H1\"}", (double)cut_A.rhs, cut_A.size(), (double)cut_A_distance); debug_log_800e67("cuts.cpp:generate_gomory", "gomory_cut_added", buf); }
+        // #endregion
         cut_pool_.add_cut(cut_type_t::MIXED_INTEGER_GOMORY, cut_A);
       } else if (B_valid) {
+        // #region agent log
+        { char buf[256]; snprintf(buf, sizeof(buf), "{\"which\":\"B\",\"rhs\":%.10e,\"nz\":%d,\"dist\":%.6e,\"hypothesisId\":\"H1\"}", (double)cut_B.rhs, cut_B.size(), (double)cut_B_distance); debug_log_800e67("cuts.cpp:generate_gomory", "gomory_cut_added", buf); }
+        // #endregion
         cut_pool_.add_cut(cut_type_t::MIXED_INTEGER_GOMORY, cut_B);
       }
     }
@@ -2608,13 +2630,16 @@ template <typename i_t, typename f_t>
 bool rational_coefficients(
   const std::vector<variable_type_t>& var_types,
   const inequality_t<i_t, f_t>& input_inequality,
-  inequality_t<i_t, f_t>& rational_inequality)
+  inequality_t<i_t, f_t>& rational_inequality,
+  const std::vector<f_t>* lower_bounds,
+  const std::vector<f_t>* upper_bounds)
 {
   rational_inequality = input_inequality;
 
   std::vector<int64_t> numerators;
   std::vector<int64_t> denominators;
   std::vector<i_t> indices;
+  f_t rhs_adjustment = 0.0;
   for (i_t k = 0; k < input_inequality.size(); k++) {
     const i_t j = rational_inequality.index(k);
     const f_t x = rational_inequality.coeff(k);
@@ -2626,17 +2651,41 @@ bool rational_coefficients(
       numerators.push_back(numerator);
       denominators.push_back(denominator);
       indices.push_back(k);
-      rational_inequality.vector.x[k] = static_cast<f_t>(numerator) / static_cast<f_t>(denominator);
+      f_t new_coeff = static_cast<f_t>(numerator) / static_cast<f_t>(denominator);
+
+      if (lower_bounds != nullptr && upper_bounds != nullptr) {
+        f_t delta = new_coeff - x;
+        if (delta > 0) {
+          const f_t lj = (*lower_bounds)[j];
+          if (lj <= -inf) { return false; }
+          rhs_adjustment += delta * lj;
+        } else if (delta < 0) {
+          const f_t uj = (*upper_bounds)[j];
+          if (uj >= inf) { return false; }
+          rhs_adjustment += delta * uj;
+        }
+      }
+
+      rational_inequality.vector.x[k] = new_coeff;
     }
   }
 
+  if (numerators.empty()) { return false; }
+
   int64_t gcd_numerators   = gcd(numerators);
   int64_t lcm_denominators = lcm(denominators);
+
+  if (gcd_numerators == 0) { return false; }
 
   f_t scalar = static_cast<f_t>(lcm_denominators) / static_cast<f_t>(gcd_numerators);
   if (scalar < 0) { return false; }
   if (std::abs(scalar) > 1000) { return false; }
 
+  // #region agent log
+  { char buf[512]; snprintf(buf, sizeof(buf), "{\"scalar\":%.6e,\"rhs_adj\":%.6e,\"rhs_before\":%.6e,\"n_int\":%d,\"hypothesisId\":\"H1\"}", (double)scalar, (double)rhs_adjustment, (double)rational_inequality.rhs, (int)numerators.size()); debug_log_800e67("cuts.cpp:rational_coefficients", "rational_coeff_applied", buf); }
+  // #endregion
+
+  rational_inequality.rhs += rhs_adjustment;
   rational_inequality.scale(scalar);
 
   return true;

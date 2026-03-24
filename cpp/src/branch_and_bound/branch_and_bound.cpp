@@ -33,6 +33,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <fstream>
 #include <future>
 #include <limits>
 #include <map>
@@ -41,6 +42,15 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+// #region agent log
+#include <chrono>
+static void debug_log_800e67_bb(const char* loc, const char* msg, const char* data_json) {
+  auto now = std::chrono::system_clock::now().time_since_epoch();
+  long long ts = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+  std::ofstream f("/home/cmaes/scratch/debug-800e67.log", std::ios::app);
+  if (f) { f << "{\"sessionId\":\"800e67\",\"location\":\"" << loc << "\",\"message\":\"" << msg << "\",\"data\":" << data_json << ",\"timestamp\":" << ts << "}\n"; }
+}
+// #endregion
 
 namespace cuopt::linear_programming::dual_simplex {
 
@@ -2345,6 +2355,9 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
       }
 
       if (cut_status != dual::status_t::OPTIMAL) {
+        // #region agent log
+        { char buf[256]; snprintf(buf, sizeof(buf), "{\"cut_status\":\"%s\",\"num_rows\":%d,\"num_cols\":%d,\"cut_pass\":%d,\"hypothesisId\":\"H3\"}", dual::status_to_string(cut_status).c_str(), original_lp_.num_rows, original_lp_.num_cols, cut_pass); debug_log_800e67_bb("bb.cpp:root_cuts", "numerical_issue_root", buf); }
+        // #endregion
         settings_.log.printf("Numerical issue at root node. Resolving from scratch\n");
         lp_status_t scratch_status =
           solve_linear_program_with_advanced_basis(original_lp_,
@@ -2362,6 +2375,9 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
           exploration_stats_.total_lp_iters += root_relax_soln_.iterations;
           root_objective_ = compute_objective(original_lp_, root_relax_soln_.x);
         } else {
+          // #region agent log
+          { char buf[128]; snprintf(buf, sizeof(buf), "{\"scratch_status\":\"%d\",\"hypothesisId\":\"H3\"}", (int)scratch_status); debug_log_800e67_bb("bb.cpp:root_cuts", "scratch_solve_failed", buf); }
+          // #endregion
           settings_.log.printf("Cut status %s\n", dual::status_to_string(cut_status).c_str());
 #ifdef WRITE_CUT_INFEASIBLE_MPS
           original_lp_.write_mps("cut_infeasible.mps");
