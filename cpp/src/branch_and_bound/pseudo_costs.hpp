@@ -323,7 +323,7 @@ void strong_branching(const simplex::lp_problem_t<i_t, f_t>& original_lp,
                       const std::vector<f_t>& edge_norms,
                       const std::vector<i_t>& basic_list,
                       const std::vector<i_t>& nonbasic_list,
-                      simplex::basis_update_mpf_t<i_t, f_t>& basis_factors,
+                      simplex::basis_update_inverse_add_t<i_t, f_t>& basis_factors,
                       mip_symmetry_t<i_t, f_t>* symmetry,
                       pseudo_costs_t<i_t, f_t>& pc);
 

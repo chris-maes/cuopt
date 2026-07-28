@@ -2484,12 +2484,13 @@ i_t basis_update_inverse_add_t<i_t, f_t>::update(const std::vector<f_t>& s, cons
   }
   
 
-  dense_vector_t<i_t, f_t> z = s; 
-  const f_t sqrt_tau = std::sqrt(tau);
-  z.scale(1.0 / sqrt_tau);
-
+  // Store Q P^T = s t^T / tau. Handle tau < 0 via signed scaling:
+  // Q = s / sqrt(|tau|), P = sign(tau) * t / sqrt(|tau|).
+  dense_vector_t<i_t, f_t> z = s;
   dense_vector_t<i_t, f_t> w = t;
-  w.scale(1.0 / sqrt_tau);
+  const f_t abs_sqrt_tau = std::sqrt(std::abs(tau));
+  z.multiply_scalar(1.0 / abs_sqrt_tau);
+  w.multiply_scalar(std::copysign(1.0, tau) / abs_sqrt_tau);
 
   Q_.set_column(num_updates_, z);
   P_.set_column(num_updates_, w);
@@ -2624,6 +2625,7 @@ void basis_update_inverse_add_t<i_t, f_t>::compute_inverses(const csc_matrix_t<i
   const i_t L_nz = L.col_start[L.n];
   L0_inverse_.n = n;
   L0_inverse_.m = n;
+  L0_inverse_.col_start.resize(n + 1);
   L0_inverse_.x.resize(L_nz);
   L0_inverse_.i.resize(L_nz);
   i_t L0_inverse_nz = 0;
@@ -2653,6 +2655,7 @@ void basis_update_inverse_add_t<i_t, f_t>::compute_inverses(const csc_matrix_t<i
   const i_t U_nz = U.col_start[U.n];
   U0_inverse_.n = n;
   U0_inverse_.m = n;
+  U0_inverse_.col_start.resize(n + 1);
   U0_inverse_.x.resize(U_nz);
   U0_inverse_.i.resize(U_nz);
   i_t U0_inverse_nz = 0;

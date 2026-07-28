@@ -59,7 +59,7 @@ class branch_and_bound_worker_t {
   std::vector<simplex::variable_status_t> leaf_vstatus;
   std::vector<f_t> leaf_edge_norms;
 
-  simplex::basis_update_mpf_t<i_t, f_t> basis_factors;
+  simplex::basis_update_inverse_add_t<i_t, f_t> basis_factors;
   std::vector<i_t> basic_list;
   std::vector<i_t> nonbasic_list;
 

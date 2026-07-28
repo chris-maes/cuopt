@@ -30,7 +30,7 @@
 
 namespace cuopt::mathematical_optimization::mip {
 
-using simplex::basis_update_mpf_t;
+using simplex::basis_update_inverse_add_t;
 using simplex::form_b;
 using simplex::lp_problem_t;
 using simplex::lp_solution_t;
@@ -3501,7 +3501,7 @@ bool cut_generation_t<i_t, f_t>::generate_cuts(const lp_problem_t<i_t, f_t>& lp,
                                                csr_matrix_t<i_t, f_t>& Arow,
                                                const std::vector<i_t>& new_slacks,
                                                const std::vector<variable_type_t>& var_types,
-                                               basis_update_mpf_t<i_t, f_t>& basis_update,
+                                               basis_update_inverse_add_t<i_t, f_t>& basis_update,
                                                const std::vector<f_t>& xstar,
                                                const std::vector<f_t>& ystar,
                                                const std::vector<f_t>& zstar,
@@ -4321,7 +4321,7 @@ void cut_generation_t<i_t, f_t>::generate_gomory_cuts(
   csr_matrix_t<i_t, f_t>& Arow,
   const std::vector<i_t>& new_slacks,
   const std::vector<variable_type_t>& var_types,
-  basis_update_mpf_t<i_t, f_t>& basis_update,
+  basis_update_inverse_add_t<i_t, f_t>& basis_update,
   const std::vector<f_t>& xstar,
   const std::vector<i_t>& basic_list,
   const std::vector<i_t>& nonbasic_list,
@@ -4452,7 +4452,7 @@ i_t tableau_equality_t<i_t, f_t>::generate_base_equality(
   const simplex_solver_settings_t<i_t, f_t>& settings,
   csr_matrix_t<i_t, f_t>& Arow,
   const std::vector<variable_type_t>& var_types,
-  basis_update_mpf_t<i_t, f_t>& basis_update,
+  basis_update_inverse_add_t<i_t, f_t>& basis_update,
   const std::vector<f_t>& xstar,
   const std::vector<i_t>& basic_list,
   const std::vector<i_t>& nonbasic_list,
@@ -6162,7 +6162,7 @@ i_t add_cuts(const simplex_solver_settings_t<i_t, f_t>& settings,
              lp_problem_t<i_t, f_t>& lp,
              std::vector<i_t>& new_slacks,
              lp_solution_t<i_t, f_t>& solution,
-             basis_update_mpf_t<i_t, f_t>& basis_update,
+             basis_update_inverse_add_t<i_t, f_t>& basis_update,
              std::vector<i_t>& basic_list,
              std::vector<i_t>& nonbasic_list,
              std::vector<variable_status_t>& vstatus,
@@ -6367,7 +6367,7 @@ i_t remove_cuts(lp_problem_t<i_t, f_t>& lp,
                 std::vector<f_t>& z,
                 std::vector<i_t>& basic_list,
                 std::vector<i_t>& nonbasic_list,
-                basis_update_mpf_t<i_t, f_t>& basis_update)
+                basis_update_inverse_add_t<i_t, f_t>& basis_update)
 {
   std::vector<i_t> cuts_to_remove;
   cuts_to_remove.reserve(lp.num_rows - original_rows);
@@ -6646,7 +6646,7 @@ template int add_cuts(const simplex_solver_settings_t<int, double>& settings,
                       lp_problem_t<int, double>& lp,
                       std::vector<int>& new_slacks,
                       lp_solution_t<int, double>& solution,
-                      basis_update_mpf_t<int, double>& basis_update,
+                      basis_update_inverse_add_t<int, double>& basis_update,
                       std::vector<int>& basic_list,
                       std::vector<int>& nonbasic_list,
                       std::vector<variable_status_t>& vstatus,
@@ -6666,7 +6666,7 @@ template int remove_cuts<int, double>(lp_problem_t<int, double>& lp,
                                       std::vector<double>& z,
                                       std::vector<int>& basic_list,
                                       std::vector<int>& nonbasic_list,
-                                      basis_update_mpf_t<int, double>& basis_update);
+                                      basis_update_inverse_add_t<int, double>& basis_update);
 
 template void read_saved_solution_for_cut_verification<int, double>(
   const lp_problem_t<int, double>& lp,

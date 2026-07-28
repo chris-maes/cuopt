@@ -46,7 +46,7 @@
 
 namespace cuopt::mathematical_optimization::mip {
 
-using simplex::basis_update_mpf_t;
+using simplex::basis_update_inverse_add_t;
 using simplex::bounds_strengthening_t;
 using simplex::compute_objective;
 using simplex::compute_user_objective;
@@ -2773,7 +2773,7 @@ lp_status_t branch_and_bound_t<i_t, f_t>::solve_root_relaxation(
   simplex_solver_settings_t<i_t, f_t> const& lp_settings,
   lp_solution_t<i_t, f_t>& root_relax_soln,
   std::vector<variable_status_t>& root_vstatus,
-  basis_update_mpf_t<i_t, f_t>& basis_update,
+  basis_update_inverse_add_t<i_t, f_t>& basis_update,
   std::vector<i_t>& basic_list,
   std::vector<i_t>& nonbasic_list,
   std::vector<f_t>& edge_norms)
@@ -2916,7 +2916,7 @@ auto branch_and_bound_t<i_t, f_t>::do_cut_pass(
   i_t& num_fractional,
   std::vector<i_t>& fractional,
   cut_generation_t<i_t, f_t>& cut_generation,
-  basis_update_mpf_t<i_t, f_t>& basis_update,
+  basis_update_inverse_add_t<i_t, f_t>& basis_update,
   std::vector<i_t>& basic_list,
   std::vector<i_t>& nonbasic_list,
   variable_bounds_t<i_t, f_t>& variable_bounds,
@@ -3281,7 +3281,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   };
   std::vector<i_t> basic_list(original_lp_.num_rows);
   std::vector<i_t> nonbasic_list;
-  basis_update_mpf_t<i_t, f_t> basis_update(original_lp_.num_rows, settings_.refactor_frequency);
+  basis_update_inverse_add_t<i_t, f_t> basis_update(original_lp_.num_rows, settings_.refactor_frequency);
   lp_status_t root_status  = lp_status_t::UNSET;
   solving_root_relaxation_ = true;
 
@@ -3452,9 +3452,12 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
       set_solution_from_cpu_fj(obj, assignment, work_units);
     };
 
+  // Disable cut generation while using inverse-add basis updates (no append_cuts yet).
+  const i_t max_cut_passes = 0;
+
   f_t cut_generation_start_time = tic();
   i_t cut_pool_size             = 0;
-  for (i_t cut_pass = 0; cut_pass < settings_.max_cut_passes; cut_pass++) {
+  for (i_t cut_pass = 0; cut_pass < max_cut_passes; cut_pass++) {
     if (toc(exploration_stats_.start_time) >= settings_.time_limit) {
       solver_status_ = mip_status_t::TIME_LIMIT;
       set_final_solution(solution, root_objective_);
@@ -3516,7 +3519,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
     if (cut_pass_result.action == cut_pass_action_t::BREAK) { break; }
 
     if (enable_root_cut_cpufj && !settings_.deterministic && settings_.num_threads >= 2 &&
-        cut_pass + 1 < settings_.max_cut_passes) {
+        cut_pass + 1 < max_cut_passes) {
       f_t root_cut_cpufj_build_start_time = tic();
       root_fj_cpu_worker.create_worker(
         original_lp_, var_types_, root_relax_soln_.x, settings_, "[RootCut CPUFJ] ");

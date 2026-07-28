@@ -541,7 +541,7 @@ void compute_reduced_costs(const std::vector<f_t>& objective,
 }
 
 template <typename i_t, typename f_t>
-void compute_primal_variables(const basis_update_mpf_t<i_t, f_t>& ft,
+void compute_primal_variables(const basis_update_inverse_add_t<i_t, f_t>& ft,
                               const std::vector<f_t>& lp_rhs,
                               const csc_matrix_t<i_t, f_t>& A,
                               const std::vector<i_t>& basic_list,
@@ -685,7 +685,7 @@ void compute_bounded_info(const std::vector<f_t>& lower,
 
 template <typename i_t, typename f_t>
 void compute_dual_solution_from_basis(const lp_problem_t<i_t, f_t>& lp,
-                                      basis_update_mpf_t<i_t, f_t>& ft,
+                                      basis_update_inverse_add_t<i_t, f_t>& ft,
                                       const std::vector<i_t>& basic_list,
                                       const std::vector<i_t>& nonbasic_list,
                                       std::vector<f_t>& y,
@@ -737,7 +737,7 @@ void compute_dual_solution_from_basis(const lp_problem_t<i_t, f_t>& lp,
 
 template <typename i_t, typename f_t>
 i_t compute_primal_solution_from_basis(const lp_problem_t<i_t, f_t>& lp,
-                                       basis_update_mpf_t<i_t, f_t>& ft,
+                                       basis_update_inverse_add_t<i_t, f_t>& ft,
                                        const std::vector<i_t>& basic_list,
                                        const std::vector<i_t>& nonbasic_list,
                                        const std::vector<variable_status_t>& vstatus,
@@ -1282,7 +1282,7 @@ i_t initialize_steepest_edge_norms(const lp_problem_t<i_t, f_t>& lp,
                                    const simplex_solver_settings_t<i_t, f_t>& settings,
                                    const f_t start_time,
                                    const std::vector<i_t>& basic_list,
-                                   basis_update_mpf_t<i_t, f_t>& ft,
+                                   basis_update_inverse_add_t<i_t, f_t>& ft,
                                    std::vector<f_t>& delta_y_steepest_edge,
                                    f_t& work_estimate)
 {
@@ -1432,7 +1432,7 @@ i_t initialize_steepest_edge_norms(const lp_problem_t<i_t, f_t>& lp,
 template <typename i_t, typename f_t>
 i_t update_steepest_edge_norms(const simplex_solver_settings_t<i_t, f_t>& settings,
                                const std::vector<i_t>& basic_list,
-                               const basis_update_mpf_t<i_t, f_t>& ft,
+                               const basis_update_inverse_add_t<i_t, f_t>& ft,
                                i_t direction,
                                const sparse_vector_t<i_t, f_t>& delta_y_sparse,
                                f_t dy_norm_squared,
@@ -1520,7 +1520,7 @@ i_t update_steepest_edge_norms(const simplex_solver_settings_t<i_t, f_t>& settin
 template <typename i_t, typename f_t>
 i_t check_steepest_edge_norms(const simplex_solver_settings_t<i_t, f_t>& settings,
                               const std::vector<i_t>& basic_list,
-                              const basis_update_mpf_t<i_t, f_t>& ft,
+                              const basis_update_inverse_add_t<i_t, f_t>& ft,
                               const std::vector<f_t>& delta_y_steepest_edge)
 {
   const i_t m = basic_list.size();
@@ -1625,24 +1625,26 @@ void reset_basis_mark(const std::vector<i_t>& basic_list,
 }
 
 template <typename i_t, typename f_t>
-void compute_delta_y(const basis_update_mpf_t<i_t, f_t>& ft,
+void compute_delta_y(const basis_update_inverse_add_t<i_t, f_t>& ft,
                      i_t basic_leaving_index,
                      i_t direction,
                      sparse_vector_t<i_t, f_t>& delta_y_sparse,
-                     sparse_vector_t<i_t, f_t>& UTsol_sparse)
+                     std::vector<f_t>& t)
 {
   const i_t m = delta_y_sparse.n;
   // BT*delta_y = -delta_zB = -sigma*ei
+  // delta_y = -direction * B^{-T} e_p, so t = B^{-T} e_p matches delta_y when
+  // direction == -1 and -delta_y otherwise.
   sparse_vector_t<i_t, f_t> ei_sparse(m, 1);
   ei_sparse.i[0] = basic_leaving_index;
   ei_sparse.x[0] = -direction;
-  ft.b_transpose_solve(ei_sparse, delta_y_sparse, UTsol_sparse);
+  ft.b_transpose_solve(ei_sparse, delta_y_sparse);
 
+  delta_y_sparse.to_dense(t);
   if (direction != -1) {
-    // We solved BT*delta_y = -sigma*ei, but for the update we need
-    // UT*etilde = ei. So we need to flip the sign of the solution
-    // in the case that sigma == 1.
-    UTsol_sparse.negate();
+    for (i_t i = 0; i < m; ++i) {
+      t[i] = -t[i];
+    }
   }
 
 #ifdef CHECK_B_TRANSPOSE_SOLVE
@@ -1691,7 +1693,7 @@ i_t update_dual_variables(const sparse_vector_t<i_t, f_t>& delta_y_sparse,
 }
 
 template <typename i_t, typename f_t>
-void adjust_for_flips(const basis_update_mpf_t<i_t, f_t>& ft,
+void adjust_for_flips(const basis_update_inverse_add_t<i_t, f_t>& ft,
                       const std::vector<i_t>& basic_list,
                       const std::vector<i_t>& delta_z_indices,
                       std::vector<i_t>& atilde_index,
@@ -1741,7 +1743,7 @@ void adjust_for_flips(const basis_update_mpf_t<i_t, f_t>& ft,
 
 template <typename i_t, typename f_t>
 i_t compute_delta_x(const lp_problem_t<i_t, f_t>& lp,
-                    const basis_update_mpf_t<i_t, f_t>& ft,
+                    const basis_update_inverse_add_t<i_t, f_t>& ft,
                     i_t entering_index,
                     i_t leaving_index,
                     i_t basic_leaving_index,
@@ -1751,15 +1753,19 @@ i_t compute_delta_x(const lp_problem_t<i_t, f_t>& lp,
                     const sparse_vector_t<i_t, f_t>& rhs_sparse,
                     const std::vector<f_t>& delta_z,
                     const std::vector<f_t>& x,
-                    sparse_vector_t<i_t, f_t>& utilde_sparse,
+                    std::vector<f_t>& s,
                     sparse_vector_t<i_t, f_t>& scaled_delta_xB_sparse,
                     std::vector<f_t>& delta_x,
                     f_t& work_estimate)
 {
   f_t delta_x_leaving = direction == 1 ? lp.lower[leaving_index] - x[leaving_index]
                                        : lp.upper[leaving_index] - x[leaving_index];
-  // B*w = -A(:, entering)
-  ft.b_solve(rhs_sparse, scaled_delta_xB_sparse, utilde_sparse);
+  // B*w = A(:, entering)  =>  w = B^{-1} A(:,q)
+  // s = B^{-1}(A(:,q) - B e_p) = w - e_p
+  ft.b_solve(rhs_sparse, scaled_delta_xB_sparse);
+  scaled_delta_xB_sparse.to_dense(s);
+  s[basic_leaving_index] -= 1.0;
+  work_estimate += 2 * s.size();
   scaled_delta_xB_sparse.negate();
   work_estimate += 2 * scaled_delta_xB_sparse.i.size();
 
@@ -2329,7 +2335,7 @@ void prepare_optimality(i_t info,
                         f_t orig_primal_infeas,
                         const lp_problem_t<i_t, f_t>& lp,
                         const simplex_solver_settings_t<i_t, f_t>& settings,
-                        basis_update_mpf_t<i_t, f_t>& ft,
+                        basis_update_inverse_add_t<i_t, f_t>& ft,
                         const std::vector<f_t>& objective,
                         const std::vector<i_t>& basic_list,
                         const std::vector<i_t>& nonbasic_list,
@@ -2511,7 +2517,7 @@ dual_status_t dual_phase2(i_t phase,
   const i_t n = lp.num_cols;
   std::vector<i_t> basic_list(m);
   std::vector<i_t> nonbasic_list;
-  basis_update_mpf_t<i_t, f_t> ft(m, settings.refactor_frequency);
+  basis_update_inverse_add_t<i_t, f_t> ft(m, settings.refactor_frequency);
   const bool initialize_basis = true;
   return dual_phase2_with_advanced_basis(phase,
                                          slack_basis,
@@ -2537,7 +2543,7 @@ dual_status_t dual_phase2_with_advanced_basis(i_t phase,
                                               const lp_problem_t<i_t, f_t>& lp,
                                               const simplex_solver_settings_t<i_t, f_t>& settings,
                                               std::vector<variable_status_t>& vstatus,
-                                              basis_update_mpf_t<i_t, f_t>& ft,
+                                              basis_update_inverse_add_t<i_t, f_t>& ft,
                                               std::vector<i_t>& basic_list,
                                               std::vector<i_t>& nonbasic_list,
                                               lp_solution_t<i_t, f_t>& sol,
@@ -2797,9 +2803,9 @@ dual_status_t dual_phase2_with_advanced_basis(i_t phase,
 
   // Sparse vectors for main loop (declared outside loop for instrumentation)
   sparse_vector_t<i_t, f_t> delta_y_sparse(m, 0);
-  sparse_vector_t<i_t, f_t> UTsol_sparse(m, 0);
+  std::vector<f_t> t_update(m, 0.0);
   sparse_vector_t<i_t, f_t> delta_xB_0_sparse(m, 0);
-  sparse_vector_t<i_t, f_t> utilde_sparse(m, 0);
+  std::vector<f_t> s_update(m, 0.0);
   sparse_vector_t<i_t, f_t> scaled_delta_xB_sparse(m, 0);
   sparse_vector_t<i_t, f_t> rhs_sparse(m, 0);
   sparse_vector_t<i_t, f_t> v_sparse(m, 0);       // For steepest edge norms
@@ -3000,11 +3006,10 @@ dual_status_t dual_phase2_with_advanced_basis(i_t phase,
     // BT*delta_y = -delta_zB = -sigma*ei
     timers.start_timer();
     delta_y_sparse.clear();
-    UTsol_sparse.clear();
     f_t btran_start_work = ft.work_estimate();
     {
       PHASE2_NVTX_RANGE("DualSimplex::btran");
-      phase2::compute_delta_y(ft, basic_leaving_index, direction, delta_y_sparse, UTsol_sparse);
+      phase2::compute_delta_y(ft, basic_leaving_index, direction, delta_y_sparse, t_update);
     }
     timers.btran_time += timers.stop_timer();
     solve_work += (ft.work_estimate() - btran_start_work);
@@ -3382,7 +3387,6 @@ dual_status_t dual_phase2_with_advanced_basis(i_t phase,
     }
 
     timers.start_timer();
-    utilde_sparse.clear();
     scaled_delta_xB_sparse.clear();
     rhs_sparse.from_csc_column(lp.A, entering_index);
     f_t ftran_start_work = ft.work_estimate();
@@ -3399,7 +3403,7 @@ dual_status_t dual_phase2_with_advanced_basis(i_t phase,
                                   rhs_sparse,
                                   delta_z,
                                   x,
-                                  utilde_sparse,
+                                  s_update,
                                   scaled_delta_xB_sparse,
                                   delta_x,
                                   phase2_work_estimate) == -1) {
@@ -3573,7 +3577,7 @@ dual_status_t dual_phase2_with_advanced_basis(i_t phase,
       // settings.log.printf("Solve work %e refactor work %e iterations since refactor %d\n",
       // solve_work, refactor_work, iterations_since_refactor);
       if (!should_refactor) {
-        i_t recommend_refactor = ft.update(utilde_sparse, UTsol_sparse, basic_leaving_index);
+        i_t recommend_refactor = ft.update(s_update, t_update, basic_leaving_index);
 #ifdef CHECK_UPDATE
         phase2::check_update(lp, settings, ft, basic_list, basic_leaving_index);
 #endif
@@ -3767,7 +3771,7 @@ template dual_status_t dual_phase2_with_advanced_basis<int, double>(
   const lp_problem_t<int, double>& lp,
   const simplex_solver_settings_t<int, double>& settings,
   std::vector<variable_status_t>& vstatus,
-  basis_update_mpf_t<int, double>& ft,
+  basis_update_inverse_add_t<int, double>& ft,
   std::vector<int>& basic_list,
   std::vector<int>& nonbasic_list,
   lp_solution_t<int, double>& sol,

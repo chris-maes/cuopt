@@ -9,6 +9,7 @@
 
 #include <dual_simplex/initial_basis.hpp>
 #include <dual_simplex/simplex_solver_settings.hpp>
+#include <linear_algebra/dense_matrix.hpp>
 #include <linear_algebra/sparse_matrix.hpp>
 #include <linear_algebra/sparse_vector.hpp>
 #include <math_optimization/types.hpp>
@@ -564,7 +565,7 @@ class basis_update_inverse_add_t {
   i_t update(const std::vector<f_t>& s, const std::vector<f_t>& t, i_t basic_leaving_index);
 
   // Compute L*U = A(p, basic_list)
-  int refactor_basis(const csc_matrix_t<i_t, f_t>& A,
+  i_t refactor_basis(const csc_matrix_t<i_t, f_t>& A,
     const simplex_solver_settings_t<i_t, f_t>& settings,
     const std::vector<f_t>& lower,
     const std::vector<f_t>& upper,
@@ -572,6 +573,14 @@ class basis_update_inverse_add_t {
     std::vector<i_t>& basic_list,
     std::vector<i_t>& nonbasic_list,
     std::vector<variable_status_t>& vstatus);
+
+  // Cut append is not supported yet for inverse-add; caller should refactor instead.
+  i_t append_cuts(const csr_matrix_t<i_t, f_t>& /*cuts_basic*/) { return -1; }
+
+  void multiply_lu(csc_matrix_t<i_t, f_t>& /*out*/) const {}
+
+  void print_stats() const {}
+
  private:
 
  void clear() {

@@ -170,7 +170,7 @@ class branch_and_bound_t {
     simplex::simplex_solver_settings_t<i_t, f_t> const& lp_settings,
     simplex::lp_solution_t<i_t, f_t>& root_relax_soln,
     std::vector<simplex::variable_status_t>& root_vstatus,
-    simplex::basis_update_mpf_t<i_t, f_t>& basis_update,
+    simplex::basis_update_inverse_add_t<i_t, f_t>& basis_update,
     std::vector<i_t>& basic_list,
     std::vector<i_t>& nonbasic_list,
     std::vector<f_t>& edge_norms);
@@ -311,7 +311,7 @@ class branch_and_bound_t {
                                 i_t& num_fractional,
                                 std::vector<i_t>& fractional,
                                 cut_generation_t<i_t, f_t>& cut_generation,
-                                simplex::basis_update_mpf_t<i_t, f_t>& basis_update,
+                                simplex::basis_update_inverse_add_t<i_t, f_t>& basis_update,
                                 std::vector<i_t>& basic_list,
                                 std::vector<i_t>& nonbasic_list,
                                 variable_bounds_t<i_t, f_t>& variable_bounds,

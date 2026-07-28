@@ -27,7 +27,7 @@
 
 namespace cuopt::mathematical_optimization::mip {
 
-using simplex::basis_update_mpf_t;
+using simplex::basis_update_inverse_add_t;
 using simplex::compute_initial_nonbasic_end;
 using simplex::compute_objective;
 using simplex::dual_status_t;
@@ -87,7 +87,7 @@ objective_change_estimate_t<f_t> single_pivot_objective_change_estimate(
   const std::vector<i_t>& basic_list,
   const std::vector<i_t>& nonbasic_list,
   const std::vector<i_t>& nonbasic_end,
-  basis_update_mpf_t<i_t, f_t>& basis_factors,
+  basis_update_inverse_add_t<i_t, f_t>& basis_factors,
   std::vector<i_t>& workspace,
   std::vector<f_t>& delta_z,
   f_t& work_estimate)
@@ -231,7 +231,7 @@ void initialize_pseudo_costs_with_estimate(const lp_problem_t<i_t, f_t>& lp,
                                            const std::vector<i_t>& nonbasic_list,
                                            const std::vector<i_t>& fractional,
                                            const csr_matrix_t<i_t, f_t>& Arow,
-                                           basis_update_mpf_t<i_t, f_t>& basis_factors,
+                                           basis_update_inverse_add_t<i_t, f_t>& basis_factors,
                                            std::vector<f_t>& strong_branch_down,
                                            std::vector<f_t>& strong_branch_up)
 {
@@ -471,7 +471,7 @@ std::pair<f_t, dual_status_t> trial_branching(const lp_problem_t<i_t, f_t>& orig
                                               const std::vector<variable_type_t>& var_types,
                                               const std::vector<variable_status_t>& vstatus,
                                               const std::vector<f_t>& edge_norms,
-                                              const basis_update_mpf_t<i_t, f_t>& basis_factors,
+                                              const basis_update_inverse_add_t<i_t, f_t>& basis_factors,
                                               const std::vector<i_t>& basic_list,
                                               const std::vector<i_t>& nonbasic_list,
                                               i_t branch_var,
@@ -501,7 +501,7 @@ std::pair<f_t, dual_status_t> trial_branching(const lp_problem_t<i_t, f_t>& orig
   std::vector<f_t> child_edge_norms                = edge_norms;
   std::vector<i_t> child_basic_list                = basic_list;
   std::vector<i_t> child_nonbasic_list             = nonbasic_list;
-  basis_update_mpf_t<i_t, f_t> child_basis_factors = basis_factors;
+  basis_update_inverse_add_t<i_t, f_t> child_basis_factors = basis_factors;
 
   // Only refactor the basis if we encounter numerical issues.
   child_basis_factors.set_refactor_frequency(iter_limit);
@@ -1021,7 +1021,7 @@ void strong_branching_reduced(const lp_problem_t<i_t, f_t>& original_lp,
                               const std::vector<f_t>& edge_norms,
                               const std::vector<i_t>& basic_list,
                               const std::vector<i_t>& nonbasic_list,
-                              basis_update_mpf_t<i_t, f_t>& basis_factors,
+                              basis_update_inverse_add_t<i_t, f_t>& basis_factors,
                               std::vector<f_t>& strong_branch_down,
                               std::vector<f_t>& strong_branch_up,
                               pseudo_costs_t<i_t, f_t>& pc)
@@ -1279,7 +1279,7 @@ void strong_branching(const lp_problem_t<i_t, f_t>& original_lp,
                       const std::vector<f_t>& edge_norms,
                       const std::vector<i_t>& basic_list,
                       const std::vector<i_t>& nonbasic_list,
-                      basis_update_mpf_t<i_t, f_t>& basis_factors,
+                      basis_update_inverse_add_t<i_t, f_t>& basis_factors,
                       mip_symmetry_t<i_t, f_t>* symmetry,
                       pseudo_costs_t<i_t, f_t>& pc)
 {
@@ -2003,7 +2003,7 @@ template void strong_branching<int, double>(const lp_problem_t<int, double>& ori
                                             const std::vector<double>& edge_norms,
                                             const std::vector<int>& basic_list,
                                             const std::vector<int>& nonbasic_list,
-                                            basis_update_mpf_t<int, double>& basis_factors,
+                                            basis_update_inverse_add_t<int, double>& basis_factors,
                                             mip_symmetry_t<int, double>* symmetry,
                                             pseudo_costs_t<int, double>& pc);
 

@@ -72,7 +72,7 @@ lp_status_t solve_linear_program_advanced(const lp_problem_t<i_t, f_t>& original
                                           std::vector<f_t>& edge_norms,
                                           work_limit_context_t* work_unit_context = nullptr);
 
-// Solve the LP using dual simplex and keep the `basis_update_mpf_t`
+// Solve the LP using dual simplex and keep the `basis_update_inverse_add_t`
 // for future use.
 template <typename i_t, typename f_t>
 lp_status_t solve_linear_program_with_advanced_basis(
@@ -80,7 +80,7 @@ lp_status_t solve_linear_program_with_advanced_basis(
   const f_t start_time,
   const simplex_solver_settings_t<i_t, f_t>& settings,
   lp_solution_t<i_t, f_t>& original_solution,
-  basis_update_mpf_t<i_t, f_t>& ft,
+  basis_update_inverse_add_t<i_t, f_t>& ft,
   std::vector<i_t>& basic_list,
   std::vector<i_t>& nonbasic_list,
   std::vector<variable_status_t>& vstatus,

@@ -119,7 +119,7 @@ lp_status_t solve_linear_program_advanced(const lp_problem_t<i_t, f_t>& original
   assert(m <= n);
   std::vector<i_t> basic_list(m);
   std::vector<i_t> nonbasic_list;
-  basis_update_mpf_t<i_t, f_t> ft(m, settings.refactor_frequency);
+  basis_update_inverse_add_t<i_t, f_t> ft(m, settings.refactor_frequency);
   lp_status_t result = solve_linear_program_with_advanced_basis(original_lp,
                                                                 start_time,
                                                                 settings,
@@ -139,7 +139,7 @@ lp_status_t solve_linear_program_with_advanced_basis(
   const f_t start_time,
   const simplex_solver_settings_t<i_t, f_t>& settings,
   lp_solution_t<i_t, f_t>& original_solution,
-  basis_update_mpf_t<i_t, f_t>& ft,
+  basis_update_inverse_add_t<i_t, f_t>& ft,
   std::vector<i_t>& basic_list,
   std::vector<i_t>& nonbasic_list,
   std::vector<variable_status_t>& vstatus,
@@ -807,7 +807,7 @@ template lp_status_t solve_linear_program_with_advanced_basis(
   const double start_time,
   const simplex_solver_settings_t<int, double>& settings,
   lp_solution_t<int, double>& original_solution,
-  basis_update_mpf_t<int, double>& ft,
+  basis_update_inverse_add_t<int, double>& ft,
   std::vector<int>& basic_list,
   std::vector<int>& nonbasic_list,
   std::vector<variable_status_t>& vstatus,
