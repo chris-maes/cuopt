@@ -484,4 +484,117 @@ class basis_update_mpf_t {
   mutable f_t work_estimate_{0.0};
 };
 
+
+template <typename i_t, typename f_t>
+class basis_update_inverse_add_t {
+ public:
+  basis_update_inverse_add_t(i_t n, const i_t refactor_frequency)
+    : L0_inverse_(n, n, 1),
+      U0_inverse_(n, n, 1),
+      Q_(n, refactor_frequency),
+      P_(n, refactor_frequency),
+      row_permutation_(n),
+      inverse_row_permutation_(n),
+      refactor_frequency_(refactor_frequency),
+      num_updates_(0)
+  {}
+
+  basis_update_inverse_add_t(const csc_matrix_t<i_t, f_t>& Linit,
+                            const csc_matrix_t<i_t, f_t>& Uinit,
+                            const std::vector<i_t>& p,
+                            const i_t refactor_frequency)
+    : L0_inverse_(Linit.n, Linit.n, 1),
+      U0_inverse_(Uinit.n, Uinit.n, 1),
+      Q_(Linit.n, refactor_frequency),
+      P_(Uinit.n, refactor_frequency),
+      row_permutation_(p),
+      inverse_row_permutation_(p.size()),
+      refactor_frequency_(refactor_frequency),
+      num_updates_(0)
+  {
+    inverse_permutation(row_permutation_, inverse_row_permutation_);
+    compute_inverses(Linit, Uinit);
+  }
+      
+  i_t reset(const csc_matrix_t<i_t, f_t>& Linit,
+            const csc_matrix_t<i_t, f_t>& Uinit,
+            const std::vector<i_t>& p)
+  {
+    row_permutation_ = p;
+    inverse_permutation(row_permutation_, inverse_row_permutation_);
+    compute_inverses(Linit, Uinit);
+    clear();
+    return 0;
+  }
+
+  i_t reset()
+  {
+    clear();
+    return 0;
+  }
+
+  void resize(i_t n)
+  {
+    L0_inverse_.resize(n, n, 1);
+    U0_inverse_.resize(n, n, 1);
+    Q_.resize(n, refactor_frequency_);
+    P_.resize(n, refactor_frequency_);
+    row_permutation_.resize(n);
+    inverse_row_permutation_.resize(n);
+    clear();
+  }
+
+  f_t work_estimate() const { return work_estimate_; }
+  void clear_work_estimate() { work_estimate_ = 0.0; }
+  void set_refactor_frequency(i_t new_frequency) { refactor_frequency_ = new_frequency; Q_.resize(L0_inverse_.n, refactor_frequency_); P_.resize(L0_inverse_.n, refactor_frequency_); }
+  i_t num_updates() const { return num_updates_; }
+
+  // Solves for x such that B*x = b, where B is the basis matrix
+  i_t b_solve(const std::vector<f_t>& rhs, std::vector<f_t>& solution) const;
+  i_t b_solve(const sparse_vector_t<i_t, f_t>& rhs, sparse_vector_t<i_t, f_t>& solution) const;
+  
+  // Solves for y such that B'*y = c, where B is the basis matrix
+  i_t b_transpose_solve(const std::vector<f_t>& rhs, std::vector<f_t>& solution) const;
+  i_t b_transpose_solve(const sparse_vector_t<i_t, f_t>& rhs,
+                        sparse_vector_t<i_t, f_t>& solution) const;
+
+  // Pass in s = B_k^{-1} (a_q - B_k e_p)
+  //    and  t = B_k^{-T} e_p
+  // Where p is the basic leaving index and q is the entering index
+  i_t update(const std::vector<f_t>& s, const std::vector<f_t>& t, i_t basic_leaving_index);
+
+  // Compute L*U = A(p, basic_list)
+  int refactor_basis(const csc_matrix_t<i_t, f_t>& A,
+    const simplex_solver_settings_t<i_t, f_t>& settings,
+    const std::vector<f_t>& lower,
+    const std::vector<f_t>& upper,
+    f_t start_time,
+    std::vector<i_t>& basic_list,
+    std::vector<i_t>& nonbasic_list,
+    std::vector<variable_status_t>& vstatus);
+ private:
+
+ void clear() {
+  num_updates_ = 0;
+  // We do not zero P and Q. Because we only look at num_updates_ columns of each. 
+ }
+
+ void solve_to_sparse_vector(i_t top, std::vector<i_t>& xi_workspace, std::vector<f_t>& x_workspace, sparse_vector_t<i_t, f_t>& out) const;
+ 
+  // Compute L0^{-1} and U0^{-1}
+  void compute_inverses(const csc_matrix_t<i_t, f_t>& L, const csc_matrix_t<i_t, f_t>& U);
+
+  i_t refactor_frequency_;
+  i_t num_updates_;
+  csc_matrix_t<i_t, f_t> L0_inverse_;
+  csc_matrix_t<i_t, f_t> U0_inverse_;
+  std::vector<i_t> row_permutation_;
+  std::vector<i_t> inverse_row_permutation_;
+
+  dense_matrix_t<i_t, f_t> Q_;
+  dense_matrix_t<i_t, f_t> P_;
+  
+  mutable f_t work_estimate_{0.0};
+};
+
 }  // namespace cuopt::mathematical_optimization::simplex

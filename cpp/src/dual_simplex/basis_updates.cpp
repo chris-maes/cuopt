@@ -2450,9 +2450,344 @@ int basis_update_mpf_t<i_t, f_t>::refactor_basis(
   return 0;
 }
 
+
+// Code below is for the basis inverse update
+
+template <typename i_t, typename f_t>
+i_t basis_update_inverse_add_t<i_t, f_t>::update(const std::vector<f_t>& s, const std::vector<f_t>& t, i_t basic_leaving_index)
+{
+  
+  if (num_updates_ >= refactor_frequency_) {
+    return 1;
+  }
+
+  // Let q be the entering index and p be the basic leaving index
+  // u_{k+1} = A(:, q) - B(:, p)
+  // v_{k+1} = e_p
+
+  // Let M_k = B_k^{-1}
+  // s_{k+1} = M_k u_{k+1} = B_k^{-1} u_{k+1} = B_k^{-1} (A(:, q) - B(:, p)) = B_k^{-1} A(:, q) - e_p
+  // t_{k+1} = M_k^T v_{k+1} = B_k^{-T} v_{k+1} = B_k^{-T} e_p
+  // tau_{k+1} = 1 + v_{k+1}^T s_{k+1}
+  //
+  //
+  // B_{k+1} = B_k + u_{k+1} v_{k+1}^T
+  // So
+  // M_{k+1} = B_{k+1}^{-1} and
+  // B_{k+1}^{-1} = M_k- \frac{M_k u_{k+1} v_{k+1}^T M_k}{1 + v_{k+1}^T M_k u_{k+1}}
+  //              = M_k - \frac{M_k u_{k+1} v_{k+1}^T M_k}{tau_{k+1}}
+  //              = M_k - \frac{s_{k+1} v_{k+1}^T M_k}{tau_{k+1}}
+  const f_t tau = 1.0 + s[basic_leaving_index];
+  if (std::abs(tau) < 1E-8 || std::abs(tau) > 1E+8) {
+    // Force a refactor. Otherwise we will get numerical issues when dividing by tau.
+    return 1;
+  }
+  
+
+  dense_vector_t<i_t, f_t> z = s; 
+  const f_t sqrt_tau = std::sqrt(tau);
+  z.scale(1.0 / sqrt_tau);
+
+  dense_vector_t<i_t, f_t> w = t;
+  w.scale(1.0 / sqrt_tau);
+
+  Q_.set_column(num_updates_, z);
+  P_.set_column(num_updates_, w);
+  num_updates_++;
+
+
+  return 0;
+}
+
+
+template <typename i_t, typename f_t>
+i_t basis_update_inverse_add_t<i_t, f_t>::b_solve(const std::vector<f_t>& rhs, std::vector<f_t>& solution) const
+{
+  // Solve for x such that B*x = rhs
+  //
+  // B*x = rhs => x = B^{-1} * rhs
+  //              x = (B_0^{-1} - Q_k P_k^T) * rhs
+  //              x = (B_0^{-1} * rhs) - Q_k * (P_k^T * rhs)
+  // P*B_0 = L0*U0
+  // B_0 = P^{-1} * L0*U0
+  // B_0^{-1} = U0^{-1} L0^{-1} P
+  //             x = (U0^{-1} L0^{-1} P * rhs) - Q_k * (P_k^T * rhs)
+  std::vector<f_t> P_transpose_rhs(num_updates_, 0.0);
+  std::vector<f_t> Q_P_transpose_rhs(rhs.size());
+  std::vector<f_t> permuted_rhs(rhs.size());
+  
+  P_.matrix_transpose_vector_multiply_columns(num_updates_, 1.0, rhs, 0.0, P_transpose_rhs);
+  Q_.matrix_vector_multiply_columns(num_updates_, 1.0, P_transpose_rhs, 0.0, Q_P_transpose_rhs);
+
+  permute_vector(row_permutation_, rhs, permuted_rhs);
+  matrix_vector_multiply(L0_inverse_, 1.0, permuted_rhs, 0.0, solution);
+  matrix_vector_multiply(U0_inverse_, 1.0, solution, -1.0, Q_P_transpose_rhs);
+  solution = std::move(Q_P_transpose_rhs);
+
+  return 0;
+}
+
+template <typename i_t, typename f_t>
+i_t basis_update_inverse_add_t<i_t, f_t>::b_solve(const sparse_vector_t<i_t, f_t>& rhs, sparse_vector_t<i_t, f_t>& solution) const
+{
+  std::vector<f_t> rhs_dense(rhs.n, 0.0);
+  std::vector<f_t> solution_dense(rhs.n, 0.0);
+
+  rhs.to_dense(rhs_dense);
+  b_solve(rhs_dense, solution_dense);
+  solution.from_dense(solution_dense);
+  return 0;
+}
+
+template <typename i_t, typename f_t>
+i_t basis_update_inverse_add_t<i_t, f_t>::b_transpose_solve(const std::vector<f_t>& rhs, std::vector<f_t>& solution) const
+{
+  // Solve for y such that B'*y = rhs
+  //
+  // B'*y = rhs => y = B^{-T} * rhs
+  //              y = (B_0^{-T} - P_k Q_k^T) * rhs
+  //              y = (B_0^{-T} * rhs) - P_k * (Q_k^T * rhs)
+
+  // P*B_0 = L0*U0
+  // B_0 = P^{-1} * L0*U0
+  // B_0^T = U0^T L0^T P
+  // B_0^{-T} = P^{-1} L0^{-T} U0^{-T}
+  //             y = (P^{-1} L0^{-T} U0^{-T} * rhs) - P_k * (Q_k^T * rhs)
+
+  std::vector<f_t> Q_transpose_rhs(num_updates_);
+  std::vector<f_t> tmp(rhs.size());
+  std::vector<f_t> tmp2(rhs.size());
+
+  Q_.matrix_transpose_vector_multiply_columns(num_updates_, 1.0, rhs, 0.0, Q_transpose_rhs);
+  P_.matrix_vector_multiply_columns(num_updates_, 1.0, Q_transpose_rhs, 0.0, solution);
+
+  matrix_transpose_vector_multiply(U0_inverse_, 1.0, rhs, 0.0, tmp);
+  matrix_transpose_vector_multiply(L0_inverse_, 1.0, tmp, 0.0, tmp2);
+  permute_vector(inverse_row_permutation_, tmp2, tmp);
+
+  for (i_t i = 0; i < solution.size(); ++i) {
+    solution[i] = tmp[i] - solution[i];
+  }
+
+  return 0;
+}
+
+template <typename i_t, typename f_t>
+i_t basis_update_inverse_add_t<i_t, f_t>::b_transpose_solve(const sparse_vector_t<i_t, f_t>& rhs, sparse_vector_t<i_t, f_t>& solution) const
+{
+  std::vector<f_t> rhs_dense(rhs.n, 0.0);
+  std::vector<f_t> solution_dense(rhs.n, 0.0);
+
+  rhs.to_dense(rhs_dense);
+  b_transpose_solve(rhs_dense, solution_dense);
+  solution.from_dense(solution_dense);
+  return 0;
+}
+
+
+template <typename i_t, typename f_t>
+void basis_update_inverse_add_t<i_t, f_t>::solve_to_sparse_vector(i_t top, std::vector<i_t>& xi_workspace, std::vector<f_t>& x_workspace, sparse_vector_t<i_t, f_t>& out) const
+{
+  const i_t m = L0_inverse_.m;
+  i_t nz      = 0;
+  for (i_t p = top; p < m; ++p) {
+    const i_t i           = xi_workspace[p];
+    out.i.push_back(i);
+    out.x.push_back(x_workspace[i]);
+    nz++;
+  }
+  work_estimate_ += 3 * (m - top);
+  for (i_t p = top; p < m; ++p) {
+    const i_t i           = xi_workspace[p];
+    xi_workspace[i] = 0;
+    x_workspace[i] = 0.0;
+  }
+  work_estimate_ += 3 * (m - top);
+}
+
+
+template <typename i_t, typename f_t>
+void basis_update_inverse_add_t<i_t, f_t>::compute_inverses(const csc_matrix_t<i_t, f_t>& L, const csc_matrix_t<i_t, f_t>& U)
+{
+  const i_t n = L.m;
+  sparse_vector_t<i_t, f_t> ej(n, 1);
+  ej.x[0] = 1.0;
+
+  std::vector<i_t> xi_workspace(2*n);
+  std::vector<f_t> x_workspace(n);
+
+  sparse_vector_t<i_t, f_t> out;
+  out.i.reserve(n);
+  out.x.reserve(n);
+  out.n = n;
+
+  const i_t L_nz = L.col_start[L.n];
+  L0_inverse_.n = n;
+  L0_inverse_.m = n;
+  L0_inverse_.x.resize(L_nz);
+  L0_inverse_.i.resize(L_nz);
+  i_t L0_inverse_nz = 0;
+  for (i_t j = 0; j < n; ++j) {
+    L0_inverse_.col_start[j] = L0_inverse_nz;
+    ej.i[0] = j;
+
+    i_t top = simplex::sparse_triangle_solve<i_t, f_t, true>(
+      ej, std::nullopt, xi_workspace, const_cast<csc_matrix_t<i_t, f_t>&>(L), x_workspace.data(), work_estimate_);
+    solve_to_sparse_vector(top, xi_workspace, x_workspace, out);  // Uses xi_workspace_ and x_workspace_ to fill rhs
+    i_t new_nnz = n - top;
+
+    if (L0_inverse_.x.size() < L0_inverse_nz + new_nnz) {
+      L0_inverse_.x.resize((L0_inverse_nz + new_nnz)*2);
+      L0_inverse_.i.resize((L0_inverse_nz + new_nnz)*2);
+    }
+    for (i_t k = 0; k < new_nnz; ++k) {
+      L0_inverse_.x[L0_inverse_nz + k] = out.x[k];
+      L0_inverse_.i[L0_inverse_nz + k] = out.i[k];
+    }
+    L0_inverse_nz += new_nnz;
+    out.i.clear();
+    out.x.clear();
+  }
+  L0_inverse_.col_start[n] = L0_inverse_nz;
+
+  const i_t U_nz = U.col_start[U.n];
+  U0_inverse_.n = n;
+  U0_inverse_.m = n;
+  U0_inverse_.x.resize(U_nz);
+  U0_inverse_.i.resize(U_nz);
+  i_t U0_inverse_nz = 0;
+  for (i_t j = 0; j < n; ++j) {
+    U0_inverse_.col_start[j] = U0_inverse_nz;
+    ej.i[0] = j;
+  
+    i_t top = simplex::sparse_triangle_solve<i_t, f_t, false>(
+      ej, std::nullopt, xi_workspace, const_cast<csc_matrix_t<i_t, f_t>&>(U), x_workspace.data(), work_estimate_);
+    solve_to_sparse_vector(top, xi_workspace, x_workspace, out);  // Uses xi_workspace_ and x_workspace_ to fill rhs
+    i_t new_nnz = n - top;
+
+    if (U0_inverse_.x.size() < U0_inverse_nz + new_nnz) {
+      U0_inverse_.x.resize((U0_inverse_nz + new_nnz)*2);
+      U0_inverse_.i.resize((U0_inverse_nz + new_nnz)*2);
+    }
+    for (i_t k = 0; k < new_nnz; ++k) {
+      U0_inverse_.x[U0_inverse_nz + k] = out.x[k];
+      U0_inverse_.i[U0_inverse_nz + k] = out.i[k];
+    }
+    U0_inverse_nz += new_nnz;
+    out.i.clear();
+    out.x.clear();
+  }
+  U0_inverse_.col_start[n] = U0_inverse_nz;
+}
+
+
+template <typename i_t, typename f_t>
+i_t basis_update_inverse_add_t<i_t, f_t>::refactor_basis(const csc_matrix_t<i_t, f_t>& A,
+    const simplex_solver_settings_t<i_t, f_t>& settings,
+    const std::vector<f_t>& lower,
+    const std::vector<f_t>& upper,
+    f_t start_time,
+    std::vector<i_t>& basic_list,
+    std::vector<i_t>& nonbasic_list,
+    std::vector<variable_status_t>& vstatus)
+{
+  std::vector<i_t> deficient;
+  std::vector<i_t> slacks_needed;
+  std::vector<i_t> superbasic_list;  // Empty superbasic list
+
+  std::vector<i_t> q;
+  csc_matrix_t<i_t, f_t> L0(A.m, A.m, 0);
+  csc_matrix_t<i_t, f_t> U0(A.m, A.m, 0);
+  i_t status = factorize_basis(A,
+                               settings,
+                               basic_list,
+                               start_time,
+                               L0,
+                               U0,
+                               row_permutation_,
+                               inverse_row_permutation_,
+                               q,
+                               deficient,
+                               slacks_needed,
+                               work_estimate_);
+  if (status == CONCURRENT_HALT_RETURN) { return CONCURRENT_HALT_RETURN; }
+  if (status == TIME_LIMIT_RETURN) { return TIME_LIMIT_RETURN; }
+  if (status == -1) {
+    settings.log.debug("Initial factorization failed\n");
+    basis_repair(A,
+                 settings,
+                 lower,
+                 upper,
+                 deficient,
+                 slacks_needed,
+                 basic_list,
+                 nonbasic_list,
+                 superbasic_list,
+                 vstatus,
+                 work_estimate_);
+
+#ifdef CHECK_BASIS_REPAIR
+    const i_t m = A.m;
+    csc_matrix_t<i_t, f_t> B(m, m, 0);
+    form_b(A, basic_list, B);
+    for (i_t k = 0; k < deficient.size(); ++k) {
+      const i_t j         = deficient[k];
+      const i_t col_start = B.col_start[j];
+      const i_t col_end   = B.col_start[j + 1];
+      const i_t col_nz    = col_end - col_start;
+      if (col_nz != 1) { settings.log.printf("Deficient column %d has %d nonzeros\n", j, col_nz); }
+      const i_t i = B.i[col_start];
+      if (i != slacks_needed[k]) {
+        settings.log.printf("Slack %d needed but found %d instead\n", slacks_needed[k], i);
+      }
+    }
+#endif
+
+    status = factorize_basis(A,
+                             settings,
+                             basic_list,
+                             start_time,
+                             L0,
+                             U0,
+                             row_permutation_,
+                             inverse_row_permutation_,
+                             q,
+                             deficient,
+                             slacks_needed,
+                             work_estimate_);
+    if (status == CONCURRENT_HALT_RETURN) { return CONCURRENT_HALT_RETURN; }
+    if (status == TIME_LIMIT_RETURN) { return TIME_LIMIT_RETURN; }
+    if (status == -1) {
+#ifdef CHECK_L_FACTOR
+      if (L0.check_matrix() == -1) { settings.log.printf("Bad L after basis repair\n"); }
+#endif
+
+      assert(deficient.size() > 0);
+      return deficient.size();
+    }
+    settings.log.debug("Basis repaired\n");
+  }
+
+  assert(q.size() == A.m);
+  reorder_basic_list(q, basic_list);  // We no longer need q after reordering the basic list
+  work_estimate_ += 3 * q.size();
+
+  // Check halt before the transpose operations: these can take hundreds of ms
+  // on large problems (L0 and U0 each have O(fill-in) nonzeros) and have no
+  // internal halt checks.  Catching the flag here avoids the dead zone.
+  if (settings.concurrent_halt != nullptr && *settings.concurrent_halt == 1) {
+    return CONCURRENT_HALT_RETURN;
+  }
+  // Inline reset() so we can check halt between the two transposes.
+  clear();
+  compute_inverses(L0, U0);
+  return 0;
+}
+
 #ifdef DUAL_SIMPLEX_INSTANTIATE_DOUBLE
 template class basis_update_t<int, double>;
 template class basis_update_mpf_t<int, double>;
+template class basis_update_inverse_add_t<int, double>;
 #endif
 
 }  // namespace cuopt::mathematical_optimization::simplex

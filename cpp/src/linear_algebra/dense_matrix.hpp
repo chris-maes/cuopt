@@ -87,6 +87,21 @@ class dense_matrix_t {
     }
   }
 
+  // y = alpha * A(:, 1:num_cols) * x + beta * y
+  void matrix_vector_multiply_columns(i_t num_cols, f_t alpha, const std::vector<f_t>& x, f_t beta, std::vector<f_t>& y) const
+  {
+    for (i_t i = 0; i < m; i++) {
+      y[i] *= beta;
+    }
+    const dense_matrix_t<i_t, f_t>& A = *this;
+
+    for (i_t j = 0; j < num_cols; j++) {
+      for (i_t i = 0; i < m; i++) {
+        y[i] += alpha * A(i, j) * x[j];
+      }
+    }
+  }
+
   // y = alpha * A' * x + beta * y
   void transpose_multiply(f_t alpha,
                           const dense_vector_t<i_t, f_t>& x,
@@ -142,6 +157,24 @@ class dense_matrix_t {
         }
         Y(j, k) = alpha * sum + beta * Y(j, k);
       }
+    }
+  }
+
+  // y <- alpha * A(:, 1:num_cols)' * x + beta * y
+  void matrix_transpose_vector_multiply_columns(i_t num_cols, f_t alpha, const std::vector<f_t>& x, f_t beta, std::vector<f_t>& y) const
+  {
+    // A is m x num_cols
+    // A' is num_cols x m
+
+    for (i_t j = 0; j < num_cols; j++) {
+      y[j] *= beta;
+    }
+    for (i_t j = 0; j < num_cols; j++) {
+      f_t sum = 0.0;
+      for (i_t i = 0; i < m; i++) {
+        sum += this->operator()(i, j) * x[i];
+      }
+      y[j] += alpha * sum;
     }
   }
 
