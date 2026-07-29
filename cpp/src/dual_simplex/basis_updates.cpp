@@ -12,6 +12,7 @@
 #include <raft/core/nvtx.hpp>
 
 #include <cmath>
+#include <algorithm>
 #include <limits>
 
 namespace cuopt::mathematical_optimization::simplex {
@@ -2651,6 +2652,7 @@ void basis_update_inverse_add_t<i_t, f_t>::compute_inverses(const csc_matrix_t<i
     out.x.clear();
   }
   L0_inverse_.col_start[n] = L0_inverse_nz;
+  max_L0_inverse_nz_ = std::max(max_L0_inverse_nz_, L0_inverse_nz);
 
   const i_t U_nz = U.col_start[U.n];
   U0_inverse_.n = n;
@@ -2681,6 +2683,7 @@ void basis_update_inverse_add_t<i_t, f_t>::compute_inverses(const csc_matrix_t<i
     out.x.clear();
   }
   U0_inverse_.col_start[n] = U0_inverse_nz;
+  max_U0_inverse_nz_ = std::max(max_U0_inverse_nz_, U0_inverse_nz);
 }
 
 

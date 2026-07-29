@@ -579,7 +579,11 @@ class basis_update_inverse_add_t {
 
   void multiply_lu(csc_matrix_t<i_t, f_t>& /*out*/) const {}
 
-  void print_stats() const {}
+  void print_stats() const
+  {
+    printf("max L0^{-1} nz      %8d\n", max_L0_inverse_nz_);
+    printf("max U0^{-1} nz      %8d\n", max_U0_inverse_nz_);
+  }
 
  private:
 
@@ -602,6 +606,10 @@ class basis_update_inverse_add_t {
 
   dense_matrix_t<i_t, f_t> Q_;
   dense_matrix_t<i_t, f_t> P_;
+
+  // Persist across refactor_basis / reset; only ever increase.
+  i_t max_L0_inverse_nz_{0};
+  i_t max_U0_inverse_nz_{0};
   
   mutable f_t work_estimate_{0.0};
 };

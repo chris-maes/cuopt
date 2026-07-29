@@ -3731,7 +3731,7 @@ dual_status_t dual_phase2_with_advanced_basis(i_t phase,
 
   if (phase == 2) {
     timers.print_timers(settings);
-    constexpr bool print_stats = false;
+    constexpr bool print_stats = true;
     if constexpr (print_stats) {
       settings.log.printf("Sparse delta_z %8d %8.2f%\n",
                           sparse_delta_z,
