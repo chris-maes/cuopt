@@ -41,6 +41,7 @@
 #include <atomic>
 #include <functional>
 #include <future>
+#include <limits>
 #include <list>
 #include <memory>
 #include <vector>
@@ -91,6 +92,116 @@ template <typename i_t, typename f_t>
 struct deterministic_bfs_policy_t;
 template <typename i_t, typename f_t>
 struct deterministic_diving_policy_t;
+
+template <typename f_t>
+struct objective_bound_pair_t {
+  objective_bound_pair_t()
+    : objective(std::numeric_limits<f_t>::quiet_NaN()), bound(std::numeric_limits<f_t>::quiet_NaN())
+  {
+  }
+  objective_bound_pair_t(f_t objective_in, f_t bound_in) : objective(objective_in), bound(bound_in)
+  {
+  }
+  bool is_valid() const { return !std::isnan(objective) && !std::isnan(bound); }
+  f_t objective;
+  f_t bound;
+};
+
+template <typename i_t, typename f_t>
+class reduced_cost_bounds_t {
+ public:
+  explicit reduced_cost_bounds_t(i_t original_cols)
+    : max_objective_(-std::numeric_limits<f_t>::infinity()),
+      lower_bounds_(original_cols),
+      upper_bounds_(original_cols)
+  {
+  }
+
+  i_t add_lower_bound(i_t col, f_t objective, f_t bound)
+  {
+    if (col >= static_cast<i_t>(lower_bounds_.size())) { return -1; }
+    auto& candidate = lower_bounds_[col];
+    if (!candidate.is_valid()) {
+      candidate      = objective_bound_pair_t<f_t>(objective, bound);
+      max_objective_ = std::max(max_objective_, objective);
+      return 1;
+    }
+    if (bound > candidate.bound) {
+      candidate      = objective_bound_pair_t<f_t>(objective, bound);
+      max_objective_ = std::max(max_objective_, objective);
+      return 2;
+    }
+    if (bound == candidate.bound && objective > candidate.objective) {
+      candidate.objective = objective;
+      max_objective_      = std::max(max_objective_, objective);
+      return 1;
+    }
+    return -2;
+  }
+
+  i_t add_upper_bound(i_t col, f_t objective, f_t bound)
+  {
+    if (col >= static_cast<i_t>(upper_bounds_.size())) { return -1; }
+    auto& candidate = upper_bounds_[col];
+    if (!candidate.is_valid()) {
+      candidate      = objective_bound_pair_t<f_t>(objective, bound);
+      max_objective_ = std::max(max_objective_, objective);
+      return 1;
+    }
+    if (bound < candidate.bound) {
+      candidate      = objective_bound_pair_t<f_t>(objective, bound);
+      max_objective_ = std::max(max_objective_, objective);
+      return 2;
+    }
+    if (bound == candidate.bound && objective > candidate.objective) {
+      candidate.objective = objective;
+      max_objective_      = std::max(max_objective_, objective);
+      return 1;
+    }
+    return -2;
+  }
+
+  i_t update_bounds_from_new_incumbent(f_t incumbent_objective,
+                                       const std::vector<simplex::variable_type_t>& var_types,
+                                       std::vector<f_t>& lower_bounds,
+                                       std::vector<f_t>& upper_bounds)
+  {
+    const i_t n                = static_cast<i_t>(lower_bounds_.size());
+    f_t max_objective          = -std::numeric_limits<f_t>::infinity();
+    i_t integer_bounds_updated = 0;
+    for (i_t j = 0; j < n; ++j) {
+      auto& lower = lower_bounds_[j];
+      if (lower.is_valid()) {
+        if (incumbent_objective <= lower.objective && lower.bound > lower_bounds[j]) {
+          lower_bounds[j] = lower.bound;
+          if (var_types[j] == simplex::variable_type_t::INTEGER) { ++integer_bounds_updated; }
+          lower = objective_bound_pair_t<f_t>();
+        }
+        if (lower.is_valid()) { max_objective = std::max(max_objective, lower.objective); }
+      }
+
+      auto& upper = upper_bounds_[j];
+      if (upper.is_valid()) {
+        if (incumbent_objective <= upper.objective && upper.bound < upper_bounds[j]) {
+          upper_bounds[j] = upper.bound;
+          if (var_types[j] == simplex::variable_type_t::INTEGER) { ++integer_bounds_updated; }
+          upper = objective_bound_pair_t<f_t>();
+        }
+        if (upper.is_valid()) { max_objective = std::max(max_objective, upper.objective); }
+      }
+    }
+    max_objective_ = max_objective;
+    return integer_bounds_updated;
+  }
+
+  i_t num_cols() const { return static_cast<i_t>(lower_bounds_.size()); }
+  f_t get_max_objective() const { return max_objective_; }
+
+ private:
+  f_t max_objective_;
+  std::vector<objective_bound_pair_t<f_t>> lower_bounds_;
+  std::vector<objective_bound_pair_t<f_t>> upper_bounds_;
+};
 
 template <typename i_t, typename f_t>
 class branch_and_bound_t {
@@ -180,6 +291,10 @@ class branch_and_bound_t {
   i_t find_reduced_cost_fixings(f_t upper_bound,
                                 std::vector<f_t>& lower_bounds,
                                 std::vector<f_t>& upper_bounds);
+  void update_reduced_cost_bounds(f_t relaxation_objective,
+                                  const std::vector<f_t>& reduced_costs,
+                                  const std::vector<simplex::variable_status_t>& var_status,
+                                  reduced_cost_bounds_t<i_t, f_t>& reduced_cost_bounds);
 
   // The main entry routine. Returns the solver status and populates solution with the incumbent.
   mip_status_t solve(simplex::mip_solution_t<i_t, f_t>& solution);
@@ -322,6 +437,7 @@ class branch_and_bound_t {
                                 f_t& last_upper_bound,
                                 f_t& last_objective,
                                 f_t root_relax_objective,
+                                reduced_cost_bounds_t<i_t, f_t>& reduced_cost_bounds,
                                 i_t& cut_pool_size,
                                 const std::vector<f_t>& saved_solution);
 
