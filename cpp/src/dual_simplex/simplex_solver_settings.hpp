@@ -104,6 +104,7 @@ struct simplex_solver_settings_t {
       symmetry(-1),
       reduced_cost_strengthening(-1),
       big_m_lns(false),
+      big_m_lns_neighborhood(false),
       big_m_lns_coeff_threshold(1e7),
       big_m_lns_time_limit(240.0),
       big_m_lns_submip_time_limit(8.0),
@@ -222,6 +223,7 @@ struct simplex_solver_settings_t {
   i_t reduced_cost_strengthening;  // -1 automatic, 0 to disable, >0 to enable reduced cost
                                    // strengthening
   bool big_m_lns;
+  bool big_m_lns_neighborhood;
   f_t big_m_lns_coeff_threshold;
   f_t big_m_lns_time_limit;
   f_t big_m_lns_submip_time_limit;

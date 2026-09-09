@@ -101,7 +101,12 @@ class branch_and_bound_t {
                      const probing_implied_bound_t<i_t, f_t>& probing_implied_bound,
                      std::shared_ptr<mip::clique_table_t<i_t, f_t>> clique_table = nullptr,
                      mip_symmetry_t<i_t, f_t>* symmetry                          = nullptr,
-                     std::vector<i_t> big_m_controls                             = {});
+                     std::shared_ptr<simplex::user_problem_t<i_t, f_t>> big_m_lns_problem = {},
+                     std::shared_ptr<simplex::user_problem_t<i_t, f_t>> papilo_problem = {},
+                     const third_party_presolve_t<i_t, f_t>* papilo_presolver = nullptr,
+                     std::vector<i_t> big_m_controls = {},
+                     std::vector<i_t> mandatory_big_m_controls = {},
+                     std::vector<i_t> bnb_to_papilo_variable = {});
 
   // Set an initial guess based on the user_problem. This should be called before solve.
   void set_initial_guess(const std::vector<f_t>& user_guess) { guess_ = user_guess; }
@@ -398,6 +403,9 @@ class branch_and_bound_t {
                                   f_t time_limit,
                                   std::vector<f_t>& best_solution,
                                   f_t& best_objective);
+  std::vector<f_t> map_big_m_lns_solution_to_bnb(const std::vector<f_t>& solution) const;
+  std::pair<bool, probing_implied_bound_t<i_t, f_t>> compute_big_m_lns_probing(
+    const simplex::user_problem_t<i_t, f_t>& neighborhood) const;
   bool snapshot_incumbent_user_solution(std::vector<f_t>& solution, f_t& objective);
 
   void launch_root_heuristics(const simplex::lp_problem_t<i_t, f_t>& lp,
@@ -515,7 +523,12 @@ class branch_and_bound_t {
   // Producer synchronization for external heuristics (CPUFJ)
   // B&B waits for registered producers at each horizon sync
   producer_sync_t producer_sync_;
+  std::shared_ptr<simplex::user_problem_t<i_t, f_t>> big_m_lns_problem_;
+  std::shared_ptr<simplex::user_problem_t<i_t, f_t>> papilo_problem_;
+  const third_party_presolve_t<i_t, f_t>* papilo_presolver_;
   std::vector<i_t> big_m_controls_;
+  std::vector<i_t> mandatory_big_m_controls_;
+  std::vector<i_t> bnb_to_papilo_variable_;
 
   // Producer wait time statistics
   double total_producer_wait_time_{0.0};

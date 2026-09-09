@@ -25,6 +25,8 @@
 
 #include <mip_heuristics/feasibility_jump/early_cpufj.cuh>
 #include <mip_heuristics/presolve/conflict_graph/clique_table.cuh>
+#include <mip_heuristics/presolve/probing_implied_bounds.cuh>
+#include <mip_heuristics/presolve/trivial_presolve.cuh>
 #include <mip_heuristics/structural/early_structural.cuh>
 
 #include <raft/sparse/detail/cusparse_wrappers.h>
@@ -55,12 +57,21 @@ template <typename i_t, typename f_t>
 mip_solver_t<i_t, f_t>::mip_solver_t(const problem_t<i_t, f_t>& op_problem,
                                      const mip_solver_settings_t<i_t, f_t>& solver_settings,
                                      timer_t timer,
-                                     std::vector<i_t> big_m_controls)
+                                     std::shared_ptr<simplex::user_problem_t<i_t, f_t>>
+                                       big_m_lns_problem,
+                                     std::shared_ptr<simplex::user_problem_t<i_t, f_t>> papilo_problem,
+                                     const third_party_presolve_t<i_t, f_t>* papilo_presolver,
+                                     std::vector<i_t> big_m_controls,
+                                     std::vector<i_t> mandatory_big_m_controls)
   : op_problem_(op_problem),
     solver_settings_(solver_settings),
     context(op_problem.handle_ptr, const_cast<problem_t<i_t, f_t>*>(&op_problem), solver_settings),
     timer_(timer),
-    big_m_controls_(std::move(big_m_controls))
+    big_m_lns_problem_(std::move(big_m_lns_problem)),
+    papilo_problem_(std::move(papilo_problem)),
+    papilo_presolver_(papilo_presolver),
+    big_m_controls_(std::move(big_m_controls)),
+    mandatory_big_m_controls_(std::move(mandatory_big_m_controls))
 {
   init_handler(op_problem.handle_ptr);
 }
@@ -88,102 +99,170 @@ struct branch_and_bound_solution_helper_t {
   simplex_solver_settings_t<i_t, f_t>& settings_;
 };
 
-// Extract probing cache into CPU-only CSR struct for implied bounds cuts
 template <typename i_t, typename f_t>
-void extract_probing_implied_bounds(const problem_t<i_t, f_t>& op_problem,
-                                    const user_problem_t<i_t, f_t>& branch_and_bound_problem,
-                                    const probing_cache_t<i_t, f_t>& probing_cache,
-                                    mip::probing_implied_bound_t<i_t, f_t>& probing_implied_bound)
-
+static void extract_probing_implied_bounds(
+  const problem_t<i_t, f_t>& op_problem,
+  const user_problem_t<i_t, f_t>& branch_and_bound_problem,
+  const probing_cache_t<i_t, f_t>& probing_cache,
+  probing_implied_bound_t<i_t, f_t>& probing_implied_bound)
 {
-  auto& pc              = probing_cache.probing_cache;
-  const i_t num_cols    = branch_and_bound_problem.num_cols;
-  probing_implied_bound = mip::probing_implied_bound_t<i_t, f_t>(num_cols);
+  const auto& pc            = probing_cache.probing_cache;
+  const i_t num_cols        = branch_and_bound_problem.num_cols;
+  probing_implied_bound     = probing_implied_bound_t<i_t, f_t>(num_cols);
+  const auto& reverse_ids   = op_problem.reverse_original_ids;
+  const i_t reverse_size    = static_cast<i_t>(reverse_ids.size());
+  auto remap                = [&](i_t raw_idx) -> i_t {
+    if (reverse_size == 0) return raw_idx;
+    if (raw_idx < 0 || raw_idx >= reverse_size) return -1;
+    return reverse_ids[raw_idx];
+  };
+  auto is_binary = [&](i_t j) {
+    return branch_and_bound_problem.lower[j] == 0.0 &&
+           branch_and_bound_problem.upper[j] == 1.0;
+  };
+  auto bounds_are_consistent = [&](i_t i, f_t lower, f_t upper) {
+    return upper >= branch_and_bound_problem.lower[i] - f_t{1e-6} &&
+           lower <= branch_and_bound_problem.upper[i] + f_t{1e-6};
+  };
 
-  // First pass: count entries per binary variable
-  // Probing cache indices are in pre-trivial-presolve space; remap to post-presolve (B&B) space
-  auto& rev_ids = op_problem.reverse_original_ids;
-  i_t rev_size  = static_cast<i_t>(rev_ids.size());
-  auto remap    = [&](i_t raw_idx) -> i_t {
-    if (rev_size == 0) return raw_idx;
-    if (raw_idx < 0 || raw_idx >= rev_size) return -1;
-    return rev_ids[raw_idx];
-  };
-  auto is_bb_binary = [&](i_t j) {
-    return branch_and_bound_problem.lower[j] == 0.0 && branch_and_bound_problem.upper[j] == 1.0;
-  };
-  auto bb_bounds_consistent = [&](i_t i, f_t b_lb, f_t b_ub) {
-    return b_ub >= branch_and_bound_problem.lower[i] - 1e-6 &&
-           b_lb <= branch_and_bound_problem.upper[i] + 1e-6;
-  };
-  for (auto& [var_idx, entries] : pc) {
+  for (const auto& [var_idx, entries] : pc) {
     if (entries[0].val_interval.interval_type != interval_type_t::EQUALS) { continue; }
-    i_t j = remap(var_idx);
-    if (j < 0 || j >= num_cols) { continue; }
-    if (!is_bb_binary(j)) { continue; }
-
-    for (auto& [imp_var, bound] : entries[0].var_to_cached_bound_map) {
-      i_t i = remap(imp_var);
-      if (i < 0 || i >= num_cols) { continue; }
-      if (!bb_bounds_consistent(i, bound.lb, bound.ub)) { continue; }
-      probing_implied_bound.zero_offsets[j + 1]++;
+    const i_t j = remap(var_idx);
+    if (j < 0 || j >= num_cols || !is_binary(j)) { continue; }
+    for (const auto& [imp_var, bound] : entries[0].var_to_cached_bound_map) {
+      const i_t i = remap(imp_var);
+      if (i >= 0 && i < num_cols && bounds_are_consistent(i, bound.lb, bound.ub)) {
+        ++probing_implied_bound.zero_offsets[j + 1];
+      }
     }
-    for (auto& [imp_var, bound] : entries[1].var_to_cached_bound_map) {
-      i_t i = remap(imp_var);
-      if (i < 0 || i >= num_cols) { continue; }
-      if (!bb_bounds_consistent(i, bound.lb, bound.ub)) { continue; }
-      probing_implied_bound.one_offsets[j + 1]++;
+    for (const auto& [imp_var, bound] : entries[1].var_to_cached_bound_map) {
+      const i_t i = remap(imp_var);
+      if (i >= 0 && i < num_cols && bounds_are_consistent(i, bound.lb, bound.ub)) {
+        ++probing_implied_bound.one_offsets[j + 1];
+      }
     }
   }
-
-  // Prefix sum
-  for (i_t j = 0; j < num_cols; j++) {
+  for (i_t j = 0; j < num_cols; ++j) {
     probing_implied_bound.zero_offsets[j + 1] += probing_implied_bound.zero_offsets[j];
     probing_implied_bound.one_offsets[j + 1] += probing_implied_bound.one_offsets[j];
   }
+  probing_implied_bound.zero_variables.resize(probing_implied_bound.zero_offsets.back());
+  probing_implied_bound.zero_lower_bound.resize(probing_implied_bound.zero_offsets.back());
+  probing_implied_bound.zero_upper_bound.resize(probing_implied_bound.zero_offsets.back());
+  probing_implied_bound.one_variables.resize(probing_implied_bound.one_offsets.back());
+  probing_implied_bound.one_lower_bound.resize(probing_implied_bound.one_offsets.back());
+  probing_implied_bound.one_upper_bound.resize(probing_implied_bound.one_offsets.back());
+  auto zero_cursor = probing_implied_bound.zero_offsets;
+  auto one_cursor  = probing_implied_bound.one_offsets;
 
-  // Allocate flat arrays
-  i_t zero_nnz = probing_implied_bound.zero_offsets[num_cols];
-  i_t one_nnz  = probing_implied_bound.one_offsets[num_cols];
-  probing_implied_bound.zero_variables.resize(zero_nnz);
-  probing_implied_bound.zero_lower_bound.resize(zero_nnz);
-  probing_implied_bound.zero_upper_bound.resize(zero_nnz);
-  probing_implied_bound.one_variables.resize(one_nnz);
-  probing_implied_bound.one_lower_bound.resize(one_nnz);
-  probing_implied_bound.one_upper_bound.resize(one_nnz);
-
-  // Second pass: fill flat arrays using write cursors
-  std::vector<i_t> zero_cursor(probing_implied_bound.zero_offsets);
-  std::vector<i_t> one_cursor(probing_implied_bound.one_offsets);
-
-  for (auto& [var_idx, entries] : pc) {
+  for (const auto& [var_idx, entries] : pc) {
     if (entries[0].val_interval.interval_type != interval_type_t::EQUALS) { continue; }
-    i_t j = remap(var_idx);
-    if (j < 0 || j >= num_cols) { continue; }
-    if (!is_bb_binary(j)) { continue; }
-
-    for (auto& [imp_var, bound] : entries[0].var_to_cached_bound_map) {
-      i_t i = remap(imp_var);
-      if (i < 0 || i >= num_cols) { continue; }
-      if (!bb_bounds_consistent(i, bound.lb, bound.ub)) { continue; }
-      i_t p                                     = zero_cursor[j]++;
+    const i_t j = remap(var_idx);
+    if (j < 0 || j >= num_cols || !is_binary(j)) { continue; }
+    for (const auto& [imp_var, bound] : entries[0].var_to_cached_bound_map) {
+      const i_t i = remap(imp_var);
+      if (i < 0 || i >= num_cols || !bounds_are_consistent(i, bound.lb, bound.ub)) { continue; }
+      const i_t p                              = zero_cursor[j]++;
       probing_implied_bound.zero_variables[p]   = i;
       probing_implied_bound.zero_lower_bound[p] = bound.lb;
       probing_implied_bound.zero_upper_bound[p] = bound.ub;
     }
-    for (auto& [imp_var, bound] : entries[1].var_to_cached_bound_map) {
-      i_t i = remap(imp_var);
-      if (i < 0 || i >= num_cols) { continue; }
-      if (!bb_bounds_consistent(i, bound.lb, bound.ub)) { continue; }
-      i_t p                                    = one_cursor[j]++;
+    for (const auto& [imp_var, bound] : entries[1].var_to_cached_bound_map) {
+      const i_t i = remap(imp_var);
+      if (i < 0 || i >= num_cols || !bounds_are_consistent(i, bound.lb, bound.ub)) { continue; }
+      const i_t p                             = one_cursor[j]++;
       probing_implied_bound.one_variables[p]   = i;
       probing_implied_bound.one_lower_bound[p] = bound.lb;
       probing_implied_bound.one_upper_bound[p] = bound.ub;
     }
   }
-
-  CUOPT_LOG_INFO("\nProbing implied bounds: %d zero entries, %d one entries", zero_nnz, one_nnz);
 }
+
+template <typename i_t, typename f_t>
+std::pair<bool, probing_implied_bound_t<i_t, f_t>> compute_fresh_probing_implied_bounds(
+  const user_problem_t<i_t, f_t>& neighborhood,
+  f_t absolute_tolerance,
+  f_t integrality_tolerance,
+  f_t time_limit)
+{
+  csr_matrix_t<i_t, f_t> csr(neighborhood.num_rows, neighborhood.num_cols, neighborhood.A.nnz());
+  neighborhood.A.to_compressed_row(csr);
+  std::vector<f_t> row_lower(neighborhood.num_rows);
+  std::vector<f_t> row_upper(neighborhood.num_rows);
+  std::vector<f_t> range(neighborhood.num_rows, f_t{0});
+  for (i_t k = 0; k < neighborhood.num_range_rows; ++k) {
+    range[neighborhood.range_rows[k]] = neighborhood.range_value[k];
+  }
+  for (i_t i = 0; i < neighborhood.num_rows; ++i) {
+    if (neighborhood.row_sense[i] == 'L') {
+      row_lower[i] = -std::numeric_limits<f_t>::infinity();
+      row_upper[i] = neighborhood.rhs[i];
+    } else if (neighborhood.row_sense[i] == 'G') {
+      row_lower[i] = neighborhood.rhs[i];
+      row_upper[i] = std::numeric_limits<f_t>::infinity();
+    } else {
+      row_lower[i] = neighborhood.rhs[i];
+      row_upper[i] = neighborhood.rhs[i] + range[i];
+    }
+  }
+  std::vector<var_t> variable_types(neighborhood.num_cols);
+  for (i_t j = 0; j < neighborhood.num_cols; ++j) {
+    variable_types[j] = neighborhood.var_types[j] == simplex::variable_type_t::CONTINUOUS
+                          ? var_t::CONTINUOUS
+                          : var_t::INTEGER;
+  }
+
+  optimization_problem_t<i_t, f_t> analysis_input(neighborhood.handle_ptr);
+  analysis_input.set_csr_constraint_matrix(csr.x.data(),
+                                           static_cast<i_t>(csr.x.size()),
+                                           csr.j.data(),
+                                           static_cast<i_t>(csr.j.size()),
+                                           csr.row_start.data(),
+                                           static_cast<i_t>(csr.row_start.size()));
+  analysis_input.set_objective_coefficients(neighborhood.objective.data(), neighborhood.num_cols);
+  analysis_input.set_variable_lower_bounds(neighborhood.lower.data(), neighborhood.num_cols);
+  analysis_input.set_variable_upper_bounds(neighborhood.upper.data(), neighborhood.num_cols);
+  analysis_input.set_variable_types(variable_types.data(), neighborhood.num_cols);
+  analysis_input.set_constraint_lower_bounds(row_lower.data(), neighborhood.num_rows);
+  analysis_input.set_constraint_upper_bounds(row_upper.data(), neighborhood.num_rows);
+  analysis_input.set_objective_scaling_factor(neighborhood.obj_scale);
+  analysis_input.set_objective_offset(neighborhood.obj_constant);
+  analysis_input.set_problem_category(problem_category_t::MIP);
+
+  mip_solver_settings_t<i_t, f_t> settings;
+  settings.tolerances.absolute_tolerance    = absolute_tolerance;
+  settings.tolerances.integrality_tolerance = integrality_tolerance;
+  problem_t<i_t, f_t> analysis_problem(analysis_input, settings.get_tolerances(), false);
+  analysis_problem.preprocess_problem();
+  mip_solver_context_t<i_t, f_t> context(neighborhood.handle_ptr, &analysis_problem, settings);
+  bound_presolve_t<i_t, f_t> bound_presolve(context);
+  auto term_crit = bound_presolve.solve(analysis_problem);
+  if (term_crit != termination_criterion_t::NO_UPDATE) {
+    bound_presolve.set_updated_bounds(analysis_problem);
+  }
+  timer_t probing_timer(time_limit);
+  const bool infeasible = bound_presolve.infeas_constraints_count > 0 ||
+                          compute_probing_cache(bound_presolve, analysis_problem, probing_timer);
+  probing_implied_bound_t<i_t, f_t> probing(neighborhood.num_cols);
+  if (!infeasible) {
+    extract_probing_implied_bounds(
+      analysis_problem, neighborhood, bound_presolve.probing_cache, probing);
+  }
+  neighborhood.handle_ptr->sync_stream();
+  return {infeasible, std::move(probing)};
+}
+
+#if MIP_INSTANTIATE_FLOAT
+template std::pair<bool, probing_implied_bound_t<int, float>>
+compute_fresh_probing_implied_bounds<int, float>(
+  const user_problem_t<int, float>&, float, float, float);
+#endif
+
+#if MIP_INSTANTIATE_DOUBLE
+template std::pair<bool, probing_implied_bound_t<int, double>>
+compute_fresh_probing_implied_bounds<int, double>(
+  const user_problem_t<int, double>&, double, double, double);
+#endif
 
 template <typename i_t, typename f_t>
 solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
@@ -350,18 +429,13 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
     // Resize the solution now that we know the number of columns/variables
     branch_and_bound_solution.resize(branch_and_bound_problem.num_cols);
 
-    std::vector<i_t> surviving_big_m_controls;
+    std::vector<i_t> bnb_to_papilo_variable;
     if (context.settings.big_m_lns) {
-      for (i_t original_id : big_m_controls_) {
-        if (original_id < 0 ||
-            original_id >= static_cast<i_t>(op_problem_.reverse_original_ids.size())) {
-          continue;
-        }
-        i_t current_id = op_problem_.reverse_original_ids[original_id];
-        if (current_id >= 0) { surviving_big_m_controls.push_back(current_id); }
+      bnb_to_papilo_variable.reserve(op_problem_.n_variables);
+      for (i_t current_id = 0; current_id < op_problem_.n_variables; ++current_id) {
+        bnb_to_papilo_variable.push_back(op_problem_.original_ids[current_id]);
       }
-      CUOPT_LOG_INFO("Big-M LNS controls after cuOpt presolve: %d/%d",
-                     static_cast<int>(surviving_big_m_controls.size()),
+      CUOPT_LOG_INFO("Big-M LNS retained %d original controls for pre-PaPILO neighborhoods",
                      static_cast<int>(big_m_controls_.size()));
     }
 
@@ -457,7 +531,12 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
                                                           probing_implied_bound,
                                                           context.problem_ptr->clique_table,
                                                           context.symmetry.get(),
-                                                          std::move(surviving_big_m_controls));
+                                                          big_m_lns_problem_,
+                                                          papilo_problem_,
+                                                          papilo_presolver_,
+                                                          std::move(big_m_controls_),
+                                                          std::move(mandatory_big_m_controls_),
+                                                          std::move(bnb_to_papilo_variable));
     context.branch_and_bound_ptr = branch_and_bound.get();
 
     // Convert the best external upper bound from user-space to B&B's internal objective space.

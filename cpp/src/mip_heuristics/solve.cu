@@ -138,13 +138,53 @@ static std::vector<i_t> detect_big_m_controls(const optimization_problem_t<i_t, 
 }
 
 template <typename i_t, typename f_t>
+static std::vector<i_t> detect_mandatory_big_m_controls(
+  const simplex::user_problem_t<i_t, f_t>& problem,
+  const std::vector<i_t>& controls,
+  f_t tolerance)
+{
+  std::vector<char> is_control(problem.num_cols, false);
+  for (i_t j : controls)
+    is_control[j] = true;
+  std::vector<i_t> row_nonzeros(problem.num_rows, 0);
+  std::vector<i_t> row_singleton(problem.num_rows, -1);
+  std::vector<f_t> row_singleton_value(problem.num_rows, 0.0);
+  for (i_t j = 0; j < problem.num_cols; ++j) {
+    for (i_t p = problem.A.col_start[j]; p < problem.A.col_start[j + 1]; ++p) {
+      if (std::abs(problem.A.x[p]) <= tolerance) { continue; }
+      const i_t row               = problem.A.i[p];
+      row_singleton[row]          = j;
+      row_singleton_value[row]    = problem.A.x[p];
+      ++row_nonzeros[row];
+    }
+  }
+  std::vector<i_t> mandatory;
+  for (i_t row = 0; row < problem.num_rows; ++row) {
+    if (problem.row_sense[row] != 'E' || std::abs(problem.rhs[row] - 1.0) > tolerance) {
+      continue;
+    }
+    const i_t singleton = row_singleton[row];
+    if (row_nonzeros[row] == 1 && is_control[singleton] &&
+        std::abs(row_singleton_value[row] - 1.0) <= tolerance) {
+      mandatory.push_back(singleton);
+    }
+  }
+  std::sort(mandatory.begin(), mandatory.end());
+  return mandatory;
+}
+
+template <typename i_t, typename f_t>
 mip_solution_t<i_t, f_t> run_mip_solver(
   mip::problem_t<i_t, f_t>& problem,
   mip_solver_settings_t<i_t, f_t> const& settings,
   timer_t& timer,
   f_t& initial_upper_bound,
   std::vector<f_t>& initial_incumbent_assignment,
+  std::shared_ptr<simplex::user_problem_t<i_t, f_t>> big_m_lns_problem,
+  std::shared_ptr<simplex::user_problem_t<i_t, f_t>> papilo_problem,
+  const mip::third_party_presolve_t<i_t, f_t>* papilo_presolver,
   std::vector<i_t> big_m_controls,
+  std::vector<i_t> mandatory_big_m_controls,
   std::unique_ptr<mip::mip_symmetry_t<i_t, f_t>> symmetry = nullptr)
 {
   try {
@@ -259,7 +299,14 @@ mip_solution_t<i_t, f_t> run_mip_solver(
     // Note: DETECT_SYMMETRY_AFTER_PRESOLVE detection is done in solver.cu::run_solver()
     // after cuOpt's presolve (probing cache, bounds propagation, trivial presolve) completes.
 
-    mip::mip_solver_t<i_t, f_t> solver(scaled_problem, settings, timer, std::move(big_m_controls));
+    mip::mip_solver_t<i_t, f_t> solver(scaled_problem,
+                                       settings,
+                                       timer,
+                                       std::move(big_m_lns_problem),
+                                       std::move(papilo_problem),
+                                       papilo_presolver,
+                                       std::move(big_m_controls),
+                                       std::move(mandatory_big_m_controls));
     // initial_upper_bound is in user-space (representation-invariant).
     // It will be converted to the target solver-space at each consumption point.
     solver.context.initial_upper_bound          = initial_upper_bound;
@@ -466,6 +513,7 @@ mip_solution_t<i_t, f_t> solve_mip_helper(optimization_problem_t<i_t, f_t>& op_p
     op_problem.print_scaling_information();
 
     std::vector<i_t> big_m_controls;
+    std::vector<i_t> mandatory_big_m_controls;
     if (settings.big_m_lns) {
       big_m_controls = detect_big_m_controls(
         op_problem, settings.big_m_lns_coeff_threshold, settings.tolerances.integrality_tolerance);
@@ -511,6 +559,17 @@ mip_solution_t<i_t, f_t> solve_mip_helper(optimization_problem_t<i_t, f_t>& op_p
     if (settings.mip_scaling != CUOPT_MIP_SCALING_OFF) {
       mip::mip_scaling_strategy_t<i_t, f_t> scaling(op_problem);
       scaling.scale_problem(settings.mip_scaling != CUOPT_MIP_SCALING_NO_OBJECTIVE);
+    }
+    std::shared_ptr<simplex::user_problem_t<i_t, f_t>> big_m_lns_problem;
+    if (settings.big_m_lns) {
+      mip::problem_t<i_t, f_t> lns_problem(op_problem);
+      big_m_lns_problem = std::make_shared<simplex::user_problem_t<i_t, f_t>>(
+        op_problem.get_handle_ptr());
+      lns_problem.get_host_user_problem(*big_m_lns_problem);
+      mandatory_big_m_controls = detect_mandatory_big_m_controls(
+        *big_m_lns_problem, big_m_controls, settings.tolerances.absolute_tolerance);
+      CUOPT_LOG_INFO("Big-M LNS detected %d mandatory controls before presolve",
+                     static_cast<int>(mandatory_big_m_controls.size()));
     }
     double presolve_time = 0.0;
     std::unique_ptr<mip::third_party_presolve_t<i_t, f_t>> presolver;
@@ -678,17 +737,6 @@ mip_solution_t<i_t, f_t> solve_mip_helper(optimization_problem_t<i_t, f_t>& op_p
                                        presolve_result_opt->original_to_reduced_map,
                                        op_problem.get_n_variables());
       problem.set_implied_integers(presolve_result_opt->implied_integer_indices);
-      if (settings.big_m_lns) {
-        std::vector<i_t> reduced_controls;
-        for (i_t original_id : big_m_controls) {
-          i_t reduced_id = presolve_result_opt->original_to_reduced_map[original_id];
-          if (reduced_id >= 0) { reduced_controls.push_back(reduced_id); }
-        }
-        CUOPT_LOG_INFO("Big-M LNS controls after PaPILO presolve: %d/%d",
-                       static_cast<int>(reduced_controls.size()),
-                       static_cast<int>(big_m_controls.size()));
-        big_m_controls = std::move(reduced_controls);
-      }
       presolve_time = timer.elapsed_time();
       if (presolve_result_opt->implied_integer_indices.size() > 0) {
         CUOPT_LOG_INFO("%d implied integers", presolve_result_opt->implied_integer_indices.size());
@@ -760,6 +808,12 @@ mip_solution_t<i_t, f_t> solve_mip_helper(optimization_problem_t<i_t, f_t>& op_p
       CUOPT_LOG_INFO("Writing user problem to file: %s", settings.user_problem_file.c_str());
       op_problem.write_to_mps(settings.user_problem_file);
     }
+    std::shared_ptr<simplex::user_problem_t<i_t, f_t>> papilo_problem;
+    if (settings.big_m_lns) {
+      papilo_problem = std::make_shared<simplex::user_problem_t<i_t, f_t>>(
+        op_problem.get_handle_ptr());
+      problem.get_host_user_problem(*papilo_problem);
+    }
     if (run_presolve && presolve_result_opt.has_value() && settings.presolve_file != "") {
       CUOPT_LOG_INFO("Writing presolved problem to file: %s", settings.presolve_file.c_str());
       presolve_result_opt->reduced_problem.write_to_mps(settings.presolve_file);
@@ -772,7 +826,11 @@ mip_solution_t<i_t, f_t> solve_mip_helper(optimization_problem_t<i_t, f_t>& op_p
                               timer,
                               early_best_user_obj,
                               early_best_user_assignment,
+                              std::move(big_m_lns_problem),
+                              std::move(papilo_problem),
+                              presolver.get(),
                               std::move(big_m_controls),
+                              std::move(mandatory_big_m_controls),
                               std::move(symmetry));
 
     const f_t cuopt_presolve_time = sol.get_stats().presolve_time;

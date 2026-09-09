@@ -21,7 +21,11 @@ class mip_solver_t {
   explicit mip_solver_t(const problem_t<i_t, f_t>& op_problem,
                         const mip_solver_settings_t<i_t, f_t>& solver_settings,
                         timer_t timer,
-                        std::vector<i_t> big_m_controls = {});
+                        std::shared_ptr<simplex::user_problem_t<i_t, f_t>> big_m_lns_problem = {},
+                        std::shared_ptr<simplex::user_problem_t<i_t, f_t>> papilo_problem = {},
+                        const third_party_presolve_t<i_t, f_t>* papilo_presolver = nullptr,
+                        std::vector<i_t> big_m_controls = {},
+                        std::vector<i_t> mandatory_big_m_controls = {});
 
   solution_t<i_t, f_t> run_solver();
   solver_stats_t<i_t, f_t>& get_solver_stats() { return context.stats; }
@@ -31,7 +35,11 @@ class mip_solver_t {
   const problem_t<i_t, f_t>& op_problem_;
   const mip_solver_settings_t<i_t, f_t>& solver_settings_;
   timer_t timer_;
+  std::shared_ptr<simplex::user_problem_t<i_t, f_t>> big_m_lns_problem_;
+  std::shared_ptr<simplex::user_problem_t<i_t, f_t>> papilo_problem_;
+  const third_party_presolve_t<i_t, f_t>* papilo_presolver_;
   std::vector<i_t> big_m_controls_;
+  std::vector<i_t> mandatory_big_m_controls_;
 };
 
 }  // namespace cuopt::mathematical_optimization::mip
