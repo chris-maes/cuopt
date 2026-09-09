@@ -154,6 +154,12 @@
 /* @brief Block bounded-variable-elimination step of cuOpt's internal MIP presolve */
 #define CUOPT_MIP_HYPER_BLOCK_BVE "mip_hyper_block_bve"
 
+/* @brief Big-M control large-neighborhood search */
+#define CUOPT_MIP_BIG_M_LNS                   "mip_big_m_lns"
+#define CUOPT_MIP_BIG_M_LNS_COEFF_THRESHOLD   "mip_big_m_lns_coeff_threshold"
+#define CUOPT_MIP_BIG_M_LNS_TIME_LIMIT        "mip_big_m_lns_time_limit"
+#define CUOPT_MIP_BIG_M_LNS_SUBMIP_TIME_LIMIT "mip_big_m_lns_submip_time_limit"
+
 /* @brief QCQP (barrier) scaling hyper-parameters */
 #define CUOPT_QCQP_HYPER_RUIZ_EQUILIBRATION "qcqp_hyper_ruiz_equilibration"
 

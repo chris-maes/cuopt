@@ -54,11 +54,13 @@ static void init_handler(const raft::handle_t* handle_ptr)
 template <typename i_t, typename f_t>
 mip_solver_t<i_t, f_t>::mip_solver_t(const problem_t<i_t, f_t>& op_problem,
                                      const mip_solver_settings_t<i_t, f_t>& solver_settings,
-                                     timer_t timer)
+                                     timer_t timer,
+                                     std::vector<i_t> big_m_controls)
   : op_problem_(op_problem),
     solver_settings_(solver_settings),
     context(op_problem.handle_ptr, const_cast<problem_t<i_t, f_t>*>(&op_problem), solver_settings),
-    timer_(timer)
+    timer_(timer),
+    big_m_controls_(std::move(big_m_controls))
 {
   init_handler(op_problem.handle_ptr);
 }
@@ -348,6 +350,21 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
     // Resize the solution now that we know the number of columns/variables
     branch_and_bound_solution.resize(branch_and_bound_problem.num_cols);
 
+    std::vector<i_t> surviving_big_m_controls;
+    if (context.settings.big_m_lns) {
+      for (i_t original_id : big_m_controls_) {
+        if (original_id < 0 ||
+            original_id >= static_cast<i_t>(op_problem_.reverse_original_ids.size())) {
+          continue;
+        }
+        i_t current_id = op_problem_.reverse_original_ids[original_id];
+        if (current_id >= 0) { surviving_big_m_controls.push_back(current_id); }
+      }
+      CUOPT_LOG_INFO("Big-M LNS controls after cuOpt presolve: %d/%d",
+                     static_cast<int>(surviving_big_m_controls.size()),
+                     static_cast<int>(big_m_controls_.size()));
+    }
+
     extract_probing_implied_bounds(op_problem_,
                                    branch_and_bound_problem,
                                    dm.ls.constraint_prop.bounds_update.probing_cache,
@@ -400,6 +417,12 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
       context.settings.reduced_cost_strengthening == -1
         ? 2
         : context.settings.reduced_cost_strengthening;
+    branch_and_bound_settings.big_m_lns = context.settings.big_m_lns;
+    branch_and_bound_settings.big_m_lns_coeff_threshold =
+      context.settings.big_m_lns_coeff_threshold;
+    branch_and_bound_settings.big_m_lns_time_limit = context.settings.big_m_lns_time_limit;
+    branch_and_bound_settings.big_m_lns_submip_time_limit =
+      context.settings.big_m_lns_submip_time_limit;
     branch_and_bound_settings.symmetry = context.settings.symmetry;
 
     branch_and_bound_settings.diving_settings = context.settings.diving_params;
@@ -433,7 +456,8 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
                                                           timer_.get_tic_start(),
                                                           probing_implied_bound,
                                                           context.problem_ptr->clique_table,
-                                                          context.symmetry.get());
+                                                          context.symmetry.get(),
+                                                          std::move(surviving_big_m_controls));
     context.branch_and_bound_ptr = branch_and_bound.get();
 
     // Convert the best external upper bound from user-space to B&B's internal objective space.

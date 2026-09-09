@@ -176,6 +176,10 @@ class mip_solver_settings_t {
    * no-op when no certified reduction exists.
    */
   bool block_bve{true};
+  bool big_m_lns{false};
+  f_t big_m_lns_coeff_threshold{1e7};
+  f_t big_m_lns_time_limit{240.0};
+  f_t big_m_lns_submip_time_limit{8.0};
   /**
    * @brief Determinism mode for MIP solver.
    *

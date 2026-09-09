@@ -103,6 +103,10 @@ struct simplex_solver_settings_t {
       strong_chvatal_gomory_cuts(-1),
       symmetry(-1),
       reduced_cost_strengthening(-1),
+      big_m_lns(false),
+      big_m_lns_coeff_threshold(1e7),
+      big_m_lns_time_limit(240.0),
+      big_m_lns_submip_time_limit(8.0),
       cut_change_threshold(1e-3),
       cut_min_orthogonality(0.5),
       mip_batch_pdlp_strong_branching(0),
@@ -217,8 +221,12 @@ struct simplex_solver_settings_t {
   i_t symmetry;  // -1 automatic, 0 to disable, >0 to enable different symmetry methods
   i_t reduced_cost_strengthening;  // -1 automatic, 0 to disable, >0 to enable reduced cost
                                    // strengthening
-  f_t cut_change_threshold;        // threshold for cut change
-  f_t cut_min_orthogonality;       // minimum orthogonality for cuts
+  bool big_m_lns;
+  f_t big_m_lns_coeff_threshold;
+  f_t big_m_lns_time_limit;
+  f_t big_m_lns_submip_time_limit;
+  f_t cut_change_threshold;   // threshold for cut change
+  f_t cut_min_orthogonality;  // minimum orthogonality for cuts
   i_t
     mip_batch_pdlp_strong_branching;  // 0 = DS only, 1 = cooperative DS + PDLP, 2 = batch PDLP only
   i_t mip_batch_pdlp_reliability_branching;  // 0 = DS only, 1 = cooperative DS + PDLP, 2 = batch

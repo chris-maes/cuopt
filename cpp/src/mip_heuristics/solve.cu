@@ -110,12 +110,41 @@ static void invoke_solution_callbacks(
 }
 
 template <typename i_t, typename f_t>
+static std::vector<i_t> detect_big_m_controls(const optimization_problem_t<i_t, f_t>& problem,
+                                              f_t coefficient_threshold,
+                                              f_t integrality_tolerance)
+{
+  const auto values  = problem.get_constraint_matrix_values_host();
+  const auto columns = problem.get_constraint_matrix_indices_host();
+  const auto lower   = problem.get_variable_lower_bounds_host();
+  const auto upper   = problem.get_variable_upper_bounds_host();
+  const auto types   = problem.get_variable_types_host();
+  std::vector<char> selected(problem.get_n_variables(), false);
+
+  for (size_t p = 0; p < values.size(); ++p) {
+    const i_t j = columns[p];
+    if (types[j] != var_t::CONTINUOUS && std::abs(lower[j]) <= integrality_tolerance &&
+        std::abs(upper[j] - 1.0) <= integrality_tolerance &&
+        std::abs(values[p]) >= coefficient_threshold) {
+      selected[j] = true;
+    }
+  }
+
+  std::vector<i_t> controls;
+  for (i_t j = 0; j < problem.get_n_variables(); ++j) {
+    if (selected[j]) { controls.push_back(j); }
+  }
+  return controls;
+}
+
+template <typename i_t, typename f_t>
 mip_solution_t<i_t, f_t> run_mip_solver(
   mip::problem_t<i_t, f_t>& problem,
   mip_solver_settings_t<i_t, f_t> const& settings,
   timer_t& timer,
   f_t& initial_upper_bound,
   std::vector<f_t>& initial_incumbent_assignment,
+  std::vector<i_t> big_m_controls,
   std::unique_ptr<mip::mip_symmetry_t<i_t, f_t>> symmetry = nullptr)
 {
   try {
@@ -230,7 +259,7 @@ mip_solution_t<i_t, f_t> run_mip_solver(
     // Note: DETECT_SYMMETRY_AFTER_PRESOLVE detection is done in solver.cu::run_solver()
     // after cuOpt's presolve (probing cache, bounds propagation, trivial presolve) completes.
 
-    mip::mip_solver_t<i_t, f_t> solver(scaled_problem, settings, timer);
+    mip::mip_solver_t<i_t, f_t> solver(scaled_problem, settings, timer, std::move(big_m_controls));
     // initial_upper_bound is in user-space (representation-invariant).
     // It will be converted to the target solver-space at each consumption point.
     solver.context.initial_upper_bound          = initial_upper_bound;
@@ -435,6 +464,14 @@ mip_solution_t<i_t, f_t> solve_mip_helper(optimization_problem_t<i_t, f_t>& op_p
     }
 
     op_problem.print_scaling_information();
+
+    std::vector<i_t> big_m_controls;
+    if (settings.big_m_lns) {
+      big_m_controls = detect_big_m_controls(
+        op_problem, settings.big_m_lns_coeff_threshold, settings.tolerances.integrality_tolerance);
+      CUOPT_LOG_INFO("Big-M LNS detected %d binary controls before scaling and presolve",
+                     static_cast<int>(big_m_controls.size()));
+    }
 
     // Check for crossing bounds. Return infeasible if there are any
     if (problem_checking_t<i_t, f_t>::has_crossing_bounds(op_problem)) {
@@ -641,6 +678,17 @@ mip_solution_t<i_t, f_t> solve_mip_helper(optimization_problem_t<i_t, f_t>& op_p
                                        presolve_result_opt->original_to_reduced_map,
                                        op_problem.get_n_variables());
       problem.set_implied_integers(presolve_result_opt->implied_integer_indices);
+      if (settings.big_m_lns) {
+        std::vector<i_t> reduced_controls;
+        for (i_t original_id : big_m_controls) {
+          i_t reduced_id = presolve_result_opt->original_to_reduced_map[original_id];
+          if (reduced_id >= 0) { reduced_controls.push_back(reduced_id); }
+        }
+        CUOPT_LOG_INFO("Big-M LNS controls after PaPILO presolve: %d/%d",
+                       static_cast<int>(reduced_controls.size()),
+                       static_cast<int>(big_m_controls.size()));
+        big_m_controls = std::move(reduced_controls);
+      }
       presolve_time = timer.elapsed_time();
       if (presolve_result_opt->implied_integer_indices.size() > 0) {
         CUOPT_LOG_INFO("%d implied integers", presolve_result_opt->implied_integer_indices.size());
@@ -724,6 +772,7 @@ mip_solution_t<i_t, f_t> solve_mip_helper(optimization_problem_t<i_t, f_t>& op_p
                               timer,
                               early_best_user_obj,
                               early_best_user_assignment,
+                              std::move(big_m_controls),
                               std::move(symmetry));
 
     const f_t cuopt_presolve_time = sol.get_stats().presolve_time;

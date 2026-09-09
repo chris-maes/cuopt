@@ -37,11 +37,13 @@
 #include <omp.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <list>
+#include <random>
 #include <string>
 #include <utilities/scope_guard.hpp>
 #include <vector>
@@ -275,12 +277,14 @@ branch_and_bound_t<i_t, f_t>::branch_and_bound_t(
   f_t start_time,
   const probing_implied_bound_t<i_t, f_t>& probing_implied_bound,
   std::shared_ptr<mip::clique_table_t<i_t, f_t>> clique_table,
-  mip_symmetry_t<i_t, f_t>* symmetry)
+  mip_symmetry_t<i_t, f_t>* symmetry,
+  std::vector<i_t> big_m_controls)
   : original_problem_(user_problem),
     settings_(solver_settings),
     probing_implied_bound_(probing_implied_bound),
     clique_table_(std::move(clique_table)),
     symmetry_(symmetry),
+    big_m_controls_(std::move(big_m_controls)),
     original_lp_(user_problem.handle_ptr, 1, 1, 1),
     Arow_(1, 1, 0),
     incumbent_(1),
@@ -361,6 +365,280 @@ void branch_and_bound_t<i_t, f_t>::set_initial_pseudocost(
   pc_.resize(original_lp_.num_cols);
   pc_.set_initial_pseudocost(parent_pc, reduced_to_original);
   has_initial_pseudocost_ = true;
+}
+
+template <typename i_t, typename f_t>
+bool branch_and_bound_t<i_t, f_t>::snapshot_incumbent_user_solution(std::vector<f_t>& solution,
+                                                                    f_t& objective)
+{
+  mutex_upper_.lock();
+  if (!incumbent_.has_incumbent) {
+    mutex_upper_.unlock();
+    return false;
+  }
+  std::vector<f_t> incumbent = incumbent_.x;
+  objective                  = incumbent_.objective;
+  mutex_upper_.unlock();
+
+  mutex_original_lp_.lock();
+  uncrush_primal_solution(original_problem_, original_lp_, incumbent, solution);
+  mutex_original_lp_.unlock();
+  return true;
+}
+
+template <typename i_t, typename f_t>
+bool branch_and_bound_t<i_t, f_t>::solve_big_m_lns_subproblem(
+  const std::vector<i_t>& controls,
+  const std::vector<f_t>& control_values,
+  const std::vector<i_t>& released,
+  f_t time_limit,
+  std::vector<f_t>& best_solution,
+  f_t& best_objective)
+{
+  if (time_limit <= 0) { return false; }
+  std::vector<char> is_released(original_problem_.num_cols, 0);
+  for (i_t j : released)
+    is_released[j] = 1;
+
+  user_problem_t<i_t, f_t> subproblem = original_problem_;
+  for (i_t j : controls) {
+    if (is_released[j]) { continue; }
+    f_t value           = control_values[j] > 0.5 ? 1.0 : 0.0;
+    subproblem.lower[j] = value;
+    subproblem.upper[j] = value;
+  }
+
+  const i_t input_rows                                 = subproblem.num_rows;
+  const i_t input_cols                                 = subproblem.num_cols;
+  const i_t input_nnz                                  = subproblem.A.nnz();
+  simplex_solver_settings_t<i_t, f_t> subsettings      = settings_;
+  subsettings.time_limit                               = time_limit;
+  constexpr i_t lns_total_threads                      = 8;
+  constexpr i_t lns_bnb_threads                        = 4;
+  constexpr i_t lns_cpufj_threads                      = lns_total_threads - lns_bnb_threads;
+  subsettings.num_threads                              = lns_bnb_threads;
+  subsettings.inside_submip                            = 1;
+  subsettings.max_cut_passes                           = 0;
+  subsettings.clique_cuts                              = 0;
+  subsettings.zero_half_cuts                           = 0;
+  subsettings.reliability_branching                    = 0;
+  subsettings.strong_branching_simplex_iteration_limit = 0;
+  subsettings.submip_settings.rins                     = 0;
+  subsettings.submip_settings.rens                     = 0;
+  subsettings.solution_callback                        = nullptr;
+  subsettings.heuristic_preemption_callback            = nullptr;
+  subsettings.set_simplex_solution_callback            = nullptr;
+  subsettings.dual_simplex_objective_callback          = nullptr;
+  subsettings.concurrent_halt                          = nullptr;
+  subsettings.log.log                                  = false;
+  subsettings.big_m_lns                                = false;
+
+  third_party_presolve_t<i_t, f_t> presolver;
+  auto status =
+    presolver.apply_to_subproblem(subproblem, subsettings, std::min(1.0, time_limit), 1);
+  settings_.log.printf(
+    "Big-M LNS sub-MIP fixed %d controls, released %d: %d rows, %d columns, %d nonzeros -> "
+    "%d rows, %d columns, %d nonzeros; %d B&B thread, %d CPUFJ threads\n",
+    static_cast<int>(controls.size() - released.size()),
+    static_cast<int>(released.size()),
+    input_rows,
+    input_cols,
+    input_nnz,
+    subproblem.num_rows,
+    subproblem.num_cols,
+    subproblem.A.nnz(),
+    subsettings.num_threads,
+    lns_cpufj_threads);
+  if (status == third_party_presolve_status_t::INFEASIBLE ||
+      status == third_party_presolve_status_t::UNBNDORINFEAS ||
+      status == third_party_presolve_status_t::UNBOUNDED) {
+    return false;
+  }
+
+  if (status == third_party_presolve_status_t::OPTIMAL && subproblem.num_cols == 0) {
+    presolver.uncrush_primal_solution({}, best_solution, false);
+  } else {
+    probing_implied_bound_t<i_t, f_t> empty_probing(subproblem.num_cols);
+    branch_and_bound_t<i_t, f_t> submip(subproblem, subsettings, tic(), empty_probing);
+    mip_solution_t<i_t, f_t> subsolution(subproblem.num_cols);
+    std::vector<std::unique_ptr<fj_cpu_worker_t<i_t, f_t>>> cpufj_workers;
+    cpufj_workers.reserve(lns_cpufj_threads);
+    std::vector<f_t> initial_guess;
+    uint64_t neighborhood_seed = static_cast<uint64_t>(settings_.random_seed);
+    for (i_t j : released) {
+      neighborhood_seed ^= static_cast<uint64_t>(j) + 0x9e3779b97f4a7c15ULL +
+                           (neighborhood_seed << 6) + (neighborhood_seed >> 2);
+    }
+    for (i_t worker_id = 0; worker_id < lns_cpufj_threads; ++worker_id) {
+      auto& worker = cpufj_workers.emplace_back(std::make_unique<fj_cpu_worker_t<i_t, f_t>>());
+      worker->improvement_callback =
+        [&submip](f_t obj, const std::vector<f_t>& solution, double work_units) {
+          submip.set_solution_from_cpu_fj(obj, solution, work_units);
+        };
+      worker->create_worker(submip.original_lp_,
+                            submip.var_types_,
+                            initial_guess,
+                            submip.settings_,
+                            std::format("Big-M LNS [CPU FJ {}]", worker_id),
+                            static_cast<int64_t>(neighborhood_seed + worker_id));
+      worker->run_async(time_limit, std::numeric_limits<double>::infinity());
+    }
+    auto substatus = submip.solve(subsolution);
+    if (!subsolution.has_incumbent || substatus == mip_status_t::NUMERICAL) { return false; }
+    presolver.uncrush_primal_solution(subsolution.x, best_solution, false);
+  }
+
+  std::vector<f_t> crushed_solution;
+  mutex_original_lp_.lock();
+  crush_primal_solution(
+    original_problem_, original_lp_, best_solution, new_slacks_, crushed_solution);
+  best_objective = compute_objective(original_lp_, crushed_solution);
+  mutex_original_lp_.unlock();
+  return true;
+}
+
+template <typename i_t, typename f_t>
+void branch_and_bound_t<i_t, f_t>::run_big_m_lns(const std::vector<i_t>& controls)
+{
+  if (controls.empty()) { return; }
+  const f_t start_time = toc(exploration_stats_.start_time);
+  const f_t end_time = std::min(settings_.time_limit, start_time + settings_.big_m_lns_time_limit);
+  std::mt19937_64 rng(static_cast<uint64_t>(settings_.random_seed) ^ 0xb16b00b5ULL);
+  const std::array<f_t, 10> densities{0.0, 0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.5, 0.75, 1.0};
+  std::vector<f_t> current(original_problem_.num_cols, 0.0);
+  f_t best_obj = inf;
+  std::vector<f_t> best_control_values;
+  f_t best_coarse_density   = 0.0;
+  f_t best_coarse_objective = inf;
+  i_t best_coarse_index     = -1;
+  i_t calls                 = 0;
+  i_t improvements          = 0;
+
+  settings_.log.printf("Big-M LNS detected %d surviving binary controls\n", (int)controls.size());
+  auto evaluate_density = [&](f_t density, const char* stage) {
+    std::fill(current.begin(), current.end(), 0.0);
+    std::vector<i_t> shuffled = controls;
+    std::shuffle(shuffled.begin(), shuffled.end(), rng);
+    i_t selected = static_cast<i_t>(std::round(density * controls.size()));
+    for (i_t k = 0; k < selected; ++k)
+      current[shuffled[k]] = 1.0;
+    std::vector<f_t> candidate;
+    f_t candidate_obj = inf;
+    f_t remaining     = end_time - toc(exploration_stats_.start_time);
+    bool solved =
+      solve_big_m_lns_subproblem(controls,
+                                 current,
+                                 {},
+                                 std::min<f_t>(settings_.big_m_lns_submip_time_limit, remaining),
+                                 candidate,
+                                 candidate_obj);
+    ++calls;
+    if (solved && candidate_obj < best_obj) {
+      current             = candidate;
+      best_obj            = candidate_obj;
+      best_control_values = candidate;
+      improvements += set_solution_from_heuristics(candidate, heuristics_origin_t::SUBMIP);
+    }
+    if (solved) {
+      settings_.log.printf("Big-M LNS %s density %.4g%% objective %+.6e time %.2f\n",
+                           stage,
+                           100 * density,
+                           compute_user_objective(original_lp_, candidate_obj),
+                           toc(exploration_stats_.start_time));
+    } else {
+      settings_.log.printf("Big-M LNS %s density %.4g%% infeasible time %.2f\n",
+                           stage,
+                           100 * density,
+                           toc(exploration_stats_.start_time));
+    }
+    return std::pair<bool, f_t>{solved, candidate_obj};
+  };
+
+  for (i_t density_index = 0; density_index < static_cast<i_t>(densities.size()); ++density_index) {
+    if (toc(exploration_stats_.start_time) >= end_time || received_halt_signal()) { break; }
+    auto [solved, candidate_obj] = evaluate_density(densities[density_index], "coarse");
+    if (solved && candidate_obj < best_coarse_objective) {
+      best_coarse_density   = densities[density_index];
+      best_coarse_objective = candidate_obj;
+      best_coarse_index     = density_index;
+    }
+  }
+
+  if (best_coarse_index >= 0) {
+    const f_t lower =
+      best_coarse_index > 0 ? densities[best_coarse_index - 1] : best_coarse_density;
+    const f_t upper = best_coarse_index + 1 < static_cast<i_t>(densities.size())
+                        ? densities[best_coarse_index + 1]
+                        : best_coarse_density;
+    for (i_t k = 1; k <= 6; ++k) {
+      if (toc(exploration_stats_.start_time) >= end_time || received_halt_signal()) { break; }
+      evaluate_density(lower + (upper - lower) * k / 7.0, "refined");
+    }
+  }
+
+  std::vector<f_t> incumbent_user;
+  f_t incumbent_obj;
+  if (snapshot_incumbent_user_solution(incumbent_user, incumbent_obj)) {
+    current  = incumbent_user;
+    best_obj = incumbent_obj;
+  } else if (!best_control_values.empty()) {
+    current = std::move(best_control_values);
+  }
+
+  i_t iteration = 0;
+  while (toc(exploration_stats_.start_time) < end_time && !received_halt_signal()) {
+    ++iteration;
+    std::vector<f_t> latest_incumbent;
+    f_t latest_objective;
+    if (snapshot_incumbent_user_solution(latest_incumbent, latest_objective) &&
+        latest_objective < best_obj) {
+      current  = std::move(latest_incumbent);
+      best_obj = latest_objective;
+    }
+    std::vector<i_t> active;
+    std::vector<i_t> inactive;
+    for (i_t j : controls) {
+      (current[j] > 0.5 ? active : inactive).push_back(j);
+    }
+    std::shuffle(active.begin(), active.end(), rng);
+    std::shuffle(inactive.begin(), inactive.end(), rng);
+    std::uniform_real_distribution<f_t> active_fraction(0.4, 0.8);
+    std::uniform_real_distribution<f_t> inactive_ratio(1.5, 3.0);
+    i_t release_active =
+      active.empty() ? 0 : std::max<i_t>(1, std::round(active.size() * active_fraction(rng)));
+    i_t release_inactive =
+      std::max<i_t>(1, std::round(std::max(release_active, 1) * inactive_ratio(rng)));
+    release_active   = std::min<i_t>(release_active, active.size());
+    release_inactive = std::min<i_t>(release_inactive, inactive.size());
+    std::vector<i_t> released(active.begin(), active.begin() + release_active);
+    released.insert(released.end(), inactive.begin(), inactive.begin() + release_inactive);
+
+    std::vector<f_t> candidate;
+    f_t candidate_obj = inf;
+    f_t remaining     = end_time - toc(exploration_stats_.start_time);
+    bool solved =
+      solve_big_m_lns_subproblem(controls,
+                                 current,
+                                 released,
+                                 std::min<f_t>(settings_.big_m_lns_submip_time_limit, remaining),
+                                 candidate,
+                                 candidate_obj);
+    ++calls;
+    if (solved && candidate_obj < best_obj) {
+      current  = candidate;
+      best_obj = candidate_obj;
+      improvements += set_solution_from_heuristics(candidate, heuristics_origin_t::SUBMIP);
+      settings_.log.printf("Big-M LNS iteration %d released %d objective %+.6e time %.2f\n",
+                           iteration,
+                           (int)released.size(),
+                           compute_user_objective(original_lp_, candidate_obj),
+                           toc(exploration_stats_.start_time));
+    }
+  }
+  settings_.log.printf("Big-M LNS completed calls %d improvements %d time %.2f\n",
+                       calls,
+                       improvements,
+                       toc(exploration_stats_.start_time));
 }
 
 template <typename i_t, typename f_t>
@@ -3832,6 +4110,28 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   is_running_            = true;
   lower_bound_numerical_ = inf;
 
+  std::vector<i_t> big_m_controls;
+  i_t big_m_lns_task_token      = 0;
+  i_t* big_m_lns_task_token_ptr = &big_m_lns_task_token;
+  if (settings_.big_m_lns && !settings_.deterministic && settings_.inside_submip == 0) {
+    big_m_controls = big_m_controls_;
+    if (big_m_controls.empty()) {
+      settings_.log.printf(
+        "Big-M LNS skipped after root relaxation: no binary controls met threshold %.6g\n",
+        settings_.big_m_lns_coeff_threshold);
+    } else {
+      settings_.log.printf(
+        "Big-M LNS starting after root relaxation with %d controls, coefficient threshold %.6g\n",
+        static_cast<int>(big_m_controls.size()),
+        settings_.big_m_lns_coeff_threshold);
+#pragma omp task default(shared) priority(CUOPT_DEFAULT_TASK_PRIORITY) \
+  depend(out : *big_m_lns_task_token_ptr) firstprivate(big_m_controls)
+      {
+        run_big_m_lns(big_m_controls);
+      }
+    }
+  }
+
   if (num_fractional != 0 && settings_.max_cut_passes > 0) { print_table_header(); }
 
   cut_pool_t<i_t, f_t> cut_pool(original_lp_.num_cols, settings_);
@@ -3873,6 +4173,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
 
   for (i_t cut_pass = 0; cut_pass < settings_.max_cut_passes; cut_pass++) {
     if (toc(exploration_stats_.start_time) >= settings_.time_limit) {
+#pragma omp taskwait depend(in : *big_m_lns_task_token_ptr)
       solver_status_ = mip_status_t::TIME_LIMIT;
       set_final_solution(solution, root_objective_);
       if (settings_.benchmark_info_ptr != nullptr) {
@@ -3933,6 +4234,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
     mutex_upper_.unlock();
 
     if (cut_pass_action == cut_pass_action_t::RETURN) {
+#pragma omp taskwait depend(in : *big_m_lns_task_token_ptr)
       if (settings_.benchmark_info_ptr != nullptr) {
         settings_.benchmark_info_ptr->cut_generation_time_sec = toc(cut_generation_start_time);
       }
@@ -3967,6 +4269,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
 
   // Stops the root heuristics and clear the associated data
   root_heuristics.stop_and_sync();
+#pragma omp taskwait depend(in : *big_m_lns_task_token_ptr)
   set_uninitialized_steepest_edge_norms(original_lp_, basic_list, edge_norms_);
 
   pc_.resize(original_lp_.num_cols);

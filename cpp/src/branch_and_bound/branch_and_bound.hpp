@@ -100,7 +100,8 @@ class branch_and_bound_t {
                      f_t start_time,
                      const probing_implied_bound_t<i_t, f_t>& probing_implied_bound,
                      std::shared_ptr<mip::clique_table_t<i_t, f_t>> clique_table = nullptr,
-                     mip_symmetry_t<i_t, f_t>* symmetry                          = nullptr);
+                     mip_symmetry_t<i_t, f_t>* symmetry                          = nullptr,
+                     std::vector<i_t> big_m_controls                             = {});
 
   // Set an initial guess based on the user_problem. This should be called before solve.
   void set_initial_guess(const std::vector<f_t>& user_guess) { guess_ = user_guess; }
@@ -390,6 +391,15 @@ class branch_and_bound_t {
   void recursive_submip(diving_worker_t<i_t, f_t>* worker,
                         simplex::simplex_solver_settings_t<i_t, f_t> submip_settings);
 
+  void run_big_m_lns(const std::vector<i_t>& controls);
+  bool solve_big_m_lns_subproblem(const std::vector<i_t>& controls,
+                                  const std::vector<f_t>& control_values,
+                                  const std::vector<i_t>& released,
+                                  f_t time_limit,
+                                  std::vector<f_t>& best_solution,
+                                  f_t& best_objective);
+  bool snapshot_incumbent_user_solution(std::vector<f_t>& solution, f_t& objective);
+
   void launch_root_heuristics(const simplex::lp_problem_t<i_t, f_t>& lp,
                               const simplex::lp_solution_t<i_t, f_t>& lp_solution,
                               const std::vector<i_t>& fractional,
@@ -505,6 +515,7 @@ class branch_and_bound_t {
   // Producer synchronization for external heuristics (CPUFJ)
   // B&B waits for registered producers at each horizon sync
   producer_sync_t producer_sync_;
+  std::vector<i_t> big_m_controls_;
 
   // Producer wait time statistics
   double total_producer_wait_time_{0.0};
