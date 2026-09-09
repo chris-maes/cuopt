@@ -435,8 +435,6 @@ solution_t<i_t, f_t> mip_solver_t<i_t, f_t>::run_solver()
       for (i_t current_id = 0; current_id < op_problem_.n_variables; ++current_id) {
         bnb_to_papilo_variable.push_back(op_problem_.original_ids[current_id]);
       }
-      CUOPT_LOG_INFO("Big-M LNS retained %d original controls for pre-PaPILO neighborhoods",
-                     static_cast<int>(big_m_controls_.size()));
     }
 
     extract_probing_implied_bounds(op_problem_,

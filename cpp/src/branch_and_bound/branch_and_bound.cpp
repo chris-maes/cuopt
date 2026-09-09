@@ -420,9 +420,6 @@ bool branch_and_bound_t<i_t, f_t>::solve_big_m_lns_subproblem(
     subproblem.upper[j] = value;
   }
 
-  const i_t input_rows                                 = subproblem.num_rows;
-  const i_t input_cols                                 = subproblem.num_cols;
-  const i_t input_nnz                                  = subproblem.A.nnz();
   simplex_solver_settings_t<i_t, f_t> subsettings      = settings_;
   subsettings.time_limit                               = time_limit;
   constexpr i_t lns_bnb_threads                        = 8;
@@ -447,26 +444,12 @@ bool branch_and_bound_t<i_t, f_t>::solve_big_m_lns_subproblem(
   subsettings.set_simplex_solution_callback            = nullptr;
   subsettings.dual_simplex_objective_callback          = nullptr;
   subsettings.concurrent_halt                          = nullptr;
-  subsettings.log.log                                  = true;
-  subsettings.log.log_to_console                       = true;
-  subsettings.log.log_prefix                           = "[Big-M LNS sub-MIP] ";
+  subsettings.log.log                                  = false;
   subsettings.big_m_lns                                = false;
 
   third_party_presolve_t<i_t, f_t> presolver;
   auto status =
     presolver.apply_to_subproblem(subproblem, subsettings, std::min(1.0, time_limit), 1);
-  settings_.log.printf(
-    "Big-M LNS sub-MIP fixed %d controls, released %d: %d rows, %d columns, %d nonzeros -> "
-    "%d rows, %d columns, %d nonzeros; %d B&B/diving threads, recursive RINS/RENS enabled\n",
-    static_cast<int>(controls.size() - released.size()),
-    static_cast<int>(released.size()),
-    input_rows,
-    input_cols,
-    input_nnz,
-    subproblem.num_rows,
-    subproblem.num_cols,
-    subproblem.A.nnz(),
-    subsettings.num_threads);
   if (status == third_party_presolve_status_t::INFEASIBLE ||
       status == third_party_presolve_status_t::UNBNDORINFEAS ||
       status == third_party_presolve_status_t::UNBOUNDED) {
@@ -507,17 +490,9 @@ std::pair<bool, probing_implied_bound_t<i_t, f_t>>
 branch_and_bound_t<i_t, f_t>::compute_big_m_lns_probing(
   const user_problem_t<i_t, f_t>& neighborhood) const
 {
-  const auto probing_start = std::chrono::steady_clock::now();
   constexpr f_t probing_limit = f_t{1.0};
   auto [infeasible, probing] = compute_fresh_probing_implied_bounds(
     neighborhood, settings_.primal_tol, settings_.integer_tol, probing_limit);
-  const double elapsed =
-    std::chrono::duration<double>(std::chrono::steady_clock::now() - probing_start).count();
-  settings_.log.printf("Big-M LNS fresh probing: %.3f seconds, %d zero, %d one implications%s\n",
-                       elapsed,
-                       static_cast<int>(probing.zero_variables.size()),
-                       static_cast<int>(probing.one_variables.size()),
-                       infeasible ? "; infeasible" : "");
   return {infeasible, std::move(probing)};
 }
 
@@ -556,13 +531,7 @@ void branch_and_bound_t<i_t, f_t>::run_big_m_lns(const std::vector<i_t>& control
   f_t best_coarse_density   = 0.0;
   f_t best_coarse_objective = inf;
   i_t best_coarse_index     = -1;
-  i_t calls                 = 0;
-  i_t improvements          = 0;
 
-  settings_.log.printf("Big-M LNS using %d controls: %d mandatory, %d optional\n",
-                       (int)controls.size(),
-                       (int)mandatory_big_m_controls_.size(),
-                       (int)optional_controls.size());
   auto evaluate_density = [&](f_t density, const char* stage) {
     std::fill(current.begin(), current.end(), 0.0);
     for (i_t j : mandatory_big_m_controls_)
@@ -582,26 +551,14 @@ void branch_and_bound_t<i_t, f_t>::run_big_m_lns(const std::vector<i_t>& control
                                  std::min<f_t>(f_t{5}, remaining),
                                  candidate,
                                  candidate_obj);
-    ++calls;
     if (solved && candidate_obj < best_obj) {
       current             = candidate;
       best_obj            = candidate_obj;
       best_control_values = candidate;
-      improvements += set_solution_from_heuristics(map_big_m_lns_solution_to_bnb(candidate),
-                                                   heuristics_origin_t::SUBMIP);
+      set_solution_from_heuristics(map_big_m_lns_solution_to_bnb(candidate),
+                                   heuristics_origin_t::SUBMIP);
     }
-    if (solved) {
-      settings_.log.printf("Big-M LNS %s density %.4g%% objective %+.6e time %.2f\n",
-                           stage,
-                           100 * density,
-                           compute_user_objective(original_lp_, candidate_obj),
-                           toc(exploration_stats_.start_time));
-    } else {
-      settings_.log.printf("Big-M LNS %s density %.4g%% infeasible time %.2f\n",
-                           stage,
-                           100 * density,
-                           toc(exploration_stats_.start_time));
-    }
+    static_cast<void>(stage);
     return std::pair<bool, f_t>{solved, candidate_obj};
   };
 
@@ -617,8 +574,6 @@ void branch_and_bound_t<i_t, f_t>::run_big_m_lns(const std::vector<i_t>& control
     } else {
       ++consecutive_coarse_deteriorations;
       if (best_coarse_index >= 0 && consecutive_coarse_deteriorations >= 2) {
-        settings_.log.printf("Big-M LNS stopping coarse portfolio after %d deteriorations\n",
-                             consecutive_coarse_deteriorations);
         break;
       }
     }
@@ -671,23 +626,13 @@ void branch_and_bound_t<i_t, f_t>::run_big_m_lns(const std::vector<i_t>& control
                                  std::min<f_t>(settings_.big_m_lns_submip_time_limit, remaining),
                                  candidate,
                                  candidate_obj);
-    ++calls;
     if (solved && candidate_obj < best_obj) {
       current  = candidate;
       best_obj = candidate_obj;
-      improvements += set_solution_from_heuristics(map_big_m_lns_solution_to_bnb(candidate),
-                                                   heuristics_origin_t::SUBMIP);
-      settings_.log.printf("Big-M LNS iteration %d released %d objective %+.6e time %.2f\n",
-                           iteration,
-                           (int)released.size(),
-                           compute_user_objective(original_lp_, candidate_obj),
-                           toc(exploration_stats_.start_time));
+      set_solution_from_heuristics(map_big_m_lns_solution_to_bnb(candidate),
+                                   heuristics_origin_t::SUBMIP);
     }
   }
-  settings_.log.printf("Big-M LNS completed calls %d improvements %d time %.2f\n",
-                       calls,
-                       improvements,
-                       toc(exploration_stats_.start_time));
 }
 
 template <typename i_t, typename f_t>
@@ -4165,14 +4110,7 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
   if (settings_.big_m_lns && !settings_.deterministic && settings_.inside_submip == 0) {
     big_m_controls = big_m_controls_;
     if (big_m_controls.empty()) {
-      settings_.log.printf(
-        "Big-M LNS skipped after root relaxation: no binary controls met threshold %.6g\n",
-        settings_.big_m_lns_coeff_threshold);
     } else {
-      settings_.log.printf(
-        "Big-M LNS starting after root relaxation with %d controls, coefficient threshold %.6g\n",
-        static_cast<int>(big_m_controls.size()),
-        settings_.big_m_lns_coeff_threshold);
 #pragma omp task default(shared) priority(CUOPT_DEFAULT_TASK_PRIORITY) \
   depend(out : *big_m_lns_task_token_ptr) firstprivate(big_m_controls)
       {
@@ -4446,11 +4384,6 @@ mip_status_t branch_and_bound_t<i_t, f_t>::solve(mip_solution_t<i_t, f_t>& solut
       const i_t num_bfs_workers    = std::max(num_workers / 2, 1);
       const i_t num_submip_workers = std::max(num_workers / 8, 1);
       const i_t num_diving_workers = std::max(num_workers - num_bfs_workers, 1);
-      if (settings_.big_m_lns_neighborhood) {
-        settings_.log.printf("Big-M LNS worker split: %d best-first, %d diving\n",
-                             num_bfs_workers,
-                             num_diving_workers);
-      }
       bfs_worker_pool_.init(num_bfs_workers,
                             original_lp_,
                             Arow_,

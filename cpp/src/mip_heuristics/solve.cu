@@ -517,8 +517,6 @@ mip_solution_t<i_t, f_t> solve_mip_helper(optimization_problem_t<i_t, f_t>& op_p
     if (settings.big_m_lns) {
       big_m_controls = detect_big_m_controls(
         op_problem, settings.big_m_lns_coeff_threshold, settings.tolerances.integrality_tolerance);
-      CUOPT_LOG_INFO("Big-M LNS detected %d binary controls before scaling and presolve",
-                     static_cast<int>(big_m_controls.size()));
     }
 
     // Check for crossing bounds. Return infeasible if there are any
@@ -568,8 +566,6 @@ mip_solution_t<i_t, f_t> solve_mip_helper(optimization_problem_t<i_t, f_t>& op_p
       lns_problem.get_host_user_problem(*big_m_lns_problem);
       mandatory_big_m_controls = detect_mandatory_big_m_controls(
         *big_m_lns_problem, big_m_controls, settings.tolerances.absolute_tolerance);
-      CUOPT_LOG_INFO("Big-M LNS detected %d mandatory controls before presolve",
-                     static_cast<int>(mandatory_big_m_controls.size()));
     }
     double presolve_time = 0.0;
     std::unique_ptr<mip::third_party_presolve_t<i_t, f_t>> presolver;
